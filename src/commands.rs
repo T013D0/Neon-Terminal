@@ -40,11 +40,19 @@ pub enum Cmd {
     Insert(u64, String),
     Run(u64, String),
     OpenSettings,
+    /// Abre Ajustes en la sección Actualizaciones.
+    OpenUpdates,
+    CheckUpdates,
+    ApplyUpdate,
     Search,
     PromptPrev,
     PromptNext,
     CopySelection(u64),
     Paste(u64),
+    /// Escribe texto tal cual en la PTY (sin tocar la línea del prompt).
+    Raw(u64, String),
+    /// Archivos soltados o copiados: se escriben como rutas.
+    PastePaths(u64, Vec<std::path::PathBuf>),
     ClearPane(u64),
     /// Cerrar sin preguntar (después de confirmar).
     ForceClosePane(u64),
@@ -257,6 +265,8 @@ pub fn palette_items(
     };
     let mut v = vec![
         it(Cmd::OpenSettings, "Ajustes", ""),
+        it(Cmd::CheckUpdates, "Buscar actualizaciones", ""),
+        it(Cmd::ApplyUpdate, "Instalar la actualización disponible", ""),
         it(Cmd::Search, "Buscar en la salida", ""),
         it(Cmd::NewTab(None), "Nueva pestaña", "Ctrl+Shift+T"),
         it(Cmd::SplitRight, "Dividir a la derecha", "Ctrl+Shift+D"),

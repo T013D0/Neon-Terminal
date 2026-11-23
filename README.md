@@ -238,6 +238,19 @@ new_tab = "Ctrl+Shift+T"
 
 Si usas oh-my-posh o starship, Neon respeta tu prompt; para desactivar el suyo define `NEON_PROMPT=0`.
 
+## Claude Code
+
+Neon trae ayudas para usar el CLI de Claude Code (todas se pueden apagar en Ajustes → Terminal):
+
+- **Shift+Enter** inserta un salto de línea mientras corre `claude`.
+- **Avisos**: si suena la campana en un panel que no miras, Neon muestra una notificación de Windows, parpadea la barra de tareas y marca la pestaña. Para que Claude Code toque la campana, usa `"preferredNotifChannel": "terminal_bell"` en `~/.claude/settings.json`.
+- **Pestañas con actividad**: punto pulsante si el título indica que Claude trabaja, punto claro si hubo salida nueva y punto rojo si te necesita.
+- **Ctrl+V inteligente**: pega texto, rutas de archivos copiados en el Explorador, y si solo hay una imagen se la entrega a Claude Code (Alt+V).
+- **Arrastrar archivos** desde el Explorador escribe su ruta (con comillas si tiene espacios).
+- **Rueda del mouse** en la pantalla completa de Claude Code hace scroll en vez de recorrer el historial.
+- **Seleccionar copia** automáticamente y el clic central pega, como en Linux.
+- Símbolos como ⏺ ⎿ ✻ se ven con una fuente de respaldo.
+
 ## Actualizaciones
 
 Neon busca versiones nuevas en los [Releases](https://github.com/T013D0/Neon-Terminal/releases) de este repositorio, como mucho una vez al día. Si hay una, aparece un botón **↑ v0.2.0** en la barra y un aviso.

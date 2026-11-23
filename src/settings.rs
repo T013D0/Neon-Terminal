@@ -46,6 +46,18 @@ pub struct Settings {
     pub keys: BTreeMap<String, String>,
     /// Temas importados.
     pub custom_themes: Vec<Theme>,
+    /// Buscar versiones nuevas al abrir (como mucho una vez al día).
+    pub check_updates: bool,
+    /// Al seleccionar texto se copia solo (como en las terminales de Linux).
+    pub copy_on_select: bool,
+    /// Clic central pega el portapapeles.
+    pub middle_paste: bool,
+    /// Shift+Enter = salto de línea cuando corre Claude Code.
+    pub shift_enter_newline: bool,
+    /// Ctrl+V inteligente: texto, archivos copiados e imágenes.
+    pub smart_paste: bool,
+    /// Avisar cuando suena la campana de un panel que no estás mirando.
+    pub notify_bell: bool,
 }
 
 impl Default for Settings {
@@ -64,6 +76,12 @@ impl Default for Settings {
             opacity: 1.0,
             keys: BTreeMap::new(),
             custom_themes: vec![],
+            check_updates: true,
+            copy_on_select: true,
+            middle_paste: true,
+            shift_enter_newline: true,
+            smart_paste: true,
+            notify_bell: true,
         }
     }
 }

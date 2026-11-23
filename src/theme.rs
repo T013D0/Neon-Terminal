@@ -140,6 +140,20 @@ pub fn install_fonts(ctx: &egui::Context) {
         .entry(FontFamily::Proportional)
         .or_default()
         .push("mono".into());
+    // Símbolos que usa Claude Code (⏺ ⎿ ✻ ✳ ❯ …) y que la Nerd Font no trae.
+    if let Some(b) = load(&[
+        r"C:\Windows\Fonts\seguisym.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]) {
+        add(&mut fonts, "symbols", b);
+        for fam in [FontFamily::Proportional, FontFamily::Monospace] {
+            fonts
+                .families
+                .entry(fam)
+                .or_default()
+                .push("symbols".into());
+        }
+    }
     if let Some(b) = load(&[
         r"C:\Windows\Fonts\YuGothR.ttc",
         r"C:\Windows\Fonts\meiryo.ttc",

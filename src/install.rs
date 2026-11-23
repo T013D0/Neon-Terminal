@@ -8,6 +8,7 @@
 //!   4. Crea el acceso directo del menú Inicio (y del escritorio con `--escritorio`).
 //!   5. Aparece en Configuración → Aplicaciones, con su botón Desinstalar.
 //!
+//! `--mantener` (usado al actualizar) deja la integración tal como está.
 //! Cada opción describe cómo debe quedar la integración: lo que no se pida se quita
 //! (así sirve también para reparar).
 //!
@@ -31,6 +32,8 @@ pub struct Options {
     pub no_explorer: bool,
     /// Al desinstalar, borrar también el historial y los ajustes.
     pub purge: bool,
+    /// Actualización: dejar la integración como el usuario la tenía (ignora las demás opciones).
+    pub keep: bool,
 }
 
 #[cfg(windows)]
@@ -96,6 +99,14 @@ mod imp {
     }
 
     pub fn install(opts: Options) -> std::io::Result<String> {
+        let mut opts = opts;
+        if opts.keep {
+            // Actualizar no debe volver a poner lo que el usuario quitó a propósito.
+            opts.no_explorer = HKCU.open_subkey(APP_PATHS).is_err();
+            opts.no_menu = HKCU.open_subkey(MENU_KEYS[0]).is_err();
+            opts.no_start = !start_menu_link().is_some_and(|l| l.exists());
+            opts.desktop = desktop_link().is_some_and(|l| l.exists());
+        }
         // Limpia lo que haya dejado el nombre anterior del proyecto.
         for old in [
             r"Software\Microsoft\Windows\CurrentVersion\App Paths\warpito.exe",
@@ -306,6 +317,7 @@ pub fn handle_cli(args: &[String]) -> Option<i32> {
         no_menu: has(&["--sin-menu"]),
         no_explorer: has(&["--sin-explorador"]),
         purge: has(&["--borrar-datos"]),
+        keep: has(&["--mantener"]),
     };
     let result = if has(&["--instalar", "--install"]) {
         imp::install(opts)

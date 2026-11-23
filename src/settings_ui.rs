@@ -15,6 +15,7 @@ pub enum Section {
     Terminal,
     Avisos,
     Atajos,
+    Actualizaciones,
     Avanzado,
 }
 
@@ -30,6 +31,13 @@ pub struct State {
 pub struct Outcome {
     pub changed: bool,
     pub close: bool,
+    pub update: Option<UpdateAction>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum UpdateAction {
+    Check,
+    Apply,
 }
 
 /// Dibuja la ventana de ajustes. Modifica `s` en el lugar.
@@ -38,9 +46,11 @@ pub fn show(
     s: &mut Settings,
     st: &mut State,
     profiles: &[Profile],
+    upd: &crate::update::UpdateState,
 ) -> Outcome {
     let before = s.clone();
     let mut close = false;
+    let mut update_action = None;
 
     // Grabando un atajo: la próxima combinación de teclas se asigna.
     if let Some(id) = st.capturing {
@@ -121,6 +131,7 @@ pub fn show(
                 (Section::Terminal, "Terminal"),
                 (Section::Avisos, "Avisos"),
                 (Section::Atajos, "Atajos"),
+                (Section::Actualizaciones, "Actualizaciones"),
                 (Section::Avanzado, "Avanzado"),
             ] {
                 let sel = st.section == sec;
@@ -164,6 +175,9 @@ pub fn show(
                         Section::Terminal => terminal(ui, s, profiles),
                         Section::Avisos => notices(ui, s),
                         Section::Atajos => shortcuts(ui, s, st),
+                        Section::Actualizaciones => {
+                            update_action = updates(ui, s, upd);
+                        }
                         Section::Avanzado => advanced(ui, s),
                     }
                 });
@@ -196,6 +210,7 @@ pub fn show(
     Outcome {
         changed: *s != before,
         close,
+        update: update_action,
     }
 }
 
@@ -388,6 +403,27 @@ fn terminal(ui: &mut egui::Ui, s: &mut Settings, profiles: &[Profile]) {
         "Preguntar antes de cerrar si hay un comando corriendo",
     );
 
+    heading(ui, "Selección y portapapeles");
+    ui.checkbox(
+        &mut s.copy_on_select,
+        "Copiar automáticamente al seleccionar texto",
+    );
+    ui.checkbox(&mut s.middle_paste, "Clic central pega el portapapeles");
+    ui.checkbox(
+        &mut s.smart_paste,
+        "Ctrl+V inteligente (texto, archivos copiados e imágenes)",
+    );
+
+    heading(ui, "Claude Code");
+    ui.checkbox(
+        &mut s.shift_enter_newline,
+        "Shift+Enter inserta un salto de línea cuando corre Claude Code",
+    );
+    ui.checkbox(
+        &mut s.notify_bell,
+        "Avisar cuando un panel que no miras llama la atención (campana)",
+    );
+
     heading(ui, "Prompt");
     ui.checkbox(
         &mut s.neon_prompt,
@@ -487,6 +523,97 @@ fn shortcuts(ui: &mut egui::Ui, s: &mut Settings, st: &mut State) {
         ui,
         "Fijos: Ctrl+1…9 (ir a la pestaña), Ctrl+Shift+C / Ctrl+Shift+V (copiar / pegar), ↑ en el prompt (historial).",
     );
+}
+
+fn updates(
+    ui: &mut egui::Ui,
+    s: &mut Settings,
+    upd: &crate::update::UpdateState,
+) -> Option<UpdateAction> {
+    use crate::update::UpdateState as U;
+    let p = pal();
+    let mut action = None;
+    heading(ui, "Versión");
+    ui.label(format!("Neon v{}", crate::update::VERSION));
+
+    heading(ui, "Actualizaciones desde GitHub");
+    ui.checkbox(
+        &mut s.check_updates,
+        "Buscar actualizaciones al abrir (una vez al día)",
+    );
+    ui.horizontal(|ui| {
+        ui.label("Repositorio");
+        ui.label(
+            RichText::new(crate::update::DEFAULT_REPO)
+                .monospace()
+                .color(p.muted),
+        );
+    });
+
+    ui.add_space(6.0);
+    let busy = matches!(upd, U::Checking | U::Downloading(_));
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(!busy, egui::Button::new("Buscar ahora"))
+            .clicked()
+        {
+            action = Some(UpdateAction::Check);
+        }
+        match upd {
+            U::Checking => {
+                ui.spinner();
+                ui.label(RichText::new("Buscando…").color(p.muted));
+            }
+            U::Downloading(v) => {
+                ui.spinner();
+                ui.label(RichText::new(format!("Descargando v{v}…")).color(p.muted));
+            }
+            U::UpToDate => {
+                ui.label(RichText::new("Estás al día").color(p.green));
+            }
+            _ => {}
+        }
+    });
+    if let U::Error(e) = upd {
+        ui.label(RichText::new(e).color(egui::Color32::from_rgb(0xff, 0x6b, 0x6b)));
+    }
+    if let U::Available(r) = upd {
+        ui.add_space(8.0);
+        egui::Frame::new()
+            .fill(p.panel)
+            .stroke(Stroke::new(1.0_f32, p.border))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new(format!("Hay una versión nueva: v{}", r.version))
+                        .strong()
+                        .size(14.0),
+                );
+                if !r.notes.is_empty() {
+                    let notes: String = r.notes.chars().take(500).collect();
+                    ui.label(RichText::new(notes).size(12.0).color(p.muted));
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let go = egui::Button::new(
+                        RichText::new("Actualizar ahora").color(egui::Color32::WHITE),
+                    )
+                    .fill(p.red);
+                    if ui.add(go).clicked() {
+                        action = Some(UpdateAction::Apply);
+                    }
+                    if !r.page.is_empty() && ui.button("Ver novedades").clicked() {
+                        let _ = open::that_detached(&r.page);
+                    }
+                });
+                hint(
+                    ui,
+                    "Neon se cierra, se actualiza y vuelve a abrir. Tu sesión se restaura.",
+                );
+            });
+    }
+    action
 }
 
 fn advanced(ui: &mut egui::Ui, s: &mut Settings) {

@@ -3,6 +3,7 @@
 //!
 //! Pantallas: bienvenida con opciones → instalando → listo. Si Neon ya está
 //! instalado muestra Actualizar/Reparar y Desinstalar (con confirmación).
+//! Con `--auto` (lo usa la actualización desde GitHub) actualiza sin preguntar.
 //!
 //! Lleva neon.exe adentro (ver build.rs). Lo copia a
 //! %LOCALAPPDATA%\Programs\neon y después llama a `neon --instalar --silencioso`
@@ -61,6 +62,8 @@ struct Opts {
     context_menu: bool,
     explorer: bool,
     launch: bool,
+    /// Actualización automática: no tocar la integración que ya había.
+    keep: bool,
 }
 
 impl Default for Opts {
@@ -71,6 +74,7 @@ impl Default for Opts {
             context_menu: true,
             explorer: true,
             launch: true,
+            keep: false,
         }
     }
 }
@@ -170,6 +174,9 @@ fn run_job(tx: mpsc::Sender<Msg>, ctx: egui::Context, job: Job, opts: Opts, purg
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             let mut cmd = std::process::Command::new(&exe);
             cmd.args(["--instalar", "--silencioso"]);
+            if opts.keep {
+                cmd.arg("--mantener");
+            }
             if opts.desktop {
                 cmd.arg("--escritorio");
             }
@@ -292,6 +299,8 @@ struct Setup {
     detail: String,
     target: f32,
     shown: f32,
+    /// Lanzado por la actualización de Neon: si ya está instalado, actualiza sin preguntar.
+    auto: bool,
     /// 0 = logo chico arriba (pantallas con opciones), 1 = logo grande (progreso).
     k: f32,
     rx: Option<Receiver<Msg>>,
@@ -326,6 +335,7 @@ impl Setup {
             detail: String::new(),
             target: 0.0,
             shown: 0.0,
+            auto: std::env::args().any(|a| a == "--auto"),
             k: 1.0,
             rx: None,
         }
@@ -376,6 +386,12 @@ impl eframe::App for Setup {
         // Después de la animación de entrada, aparece la pantalla de opciones.
         if self.state == State::Intro && t > 0.9 {
             self.enter_menu();
+            if self.auto && matches!(self.state, State::Manage) {
+                // Actualización lanzada desde Neon: sin preguntas, y vuelve a abrir Neon.
+                self.opts.keep = true;
+                self.opts.launch = true;
+                self.begin(ctx, Job::Update);
+            }
         }
         if let Some(rx) = &self.rx {
             while let Ok(m) = rx.try_recv() {

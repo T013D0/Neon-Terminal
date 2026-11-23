@@ -103,6 +103,13 @@ impl Workspace {
         self.pane_mut(f)
     }
 
+    pub fn panes(&self) -> impl Iterator<Item = &Pane> {
+        self.tree.tiles.tiles().filter_map(|t| match t {
+            Tile::Pane(p) => Some(p),
+            _ => None,
+        })
+    }
+
     pub fn panes_mut(&mut self) -> impl Iterator<Item = &mut Pane> {
         self.tree.tiles.tiles_mut().filter_map(|t| match t {
             Tile::Pane(p) => Some(p),

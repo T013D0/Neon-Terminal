@@ -502,7 +502,36 @@ impl TerminalBackend {
     fn scroll(&mut self, terminal: &mut Term<EventProxy>, delta_value: i32) {
         if delta_value != 0 {
             let scroll = Scroll::Delta(delta_value);
-            if terminal
+            let mode = *terminal.mode();
+            // Patched (neon): apps en pantalla alterna que piden el mouse
+            // (Claude Code en pantalla completa) reciben la rueda como
+            // reporte de mouse, no como flechas (que recorrían el historial).
+            if mode.contains(TermMode::ALT_SCREEN)
+                && mode.intersects(TermMode::MOUSE_MODE)
+            {
+                let col = terminal.columns() / 2 + 1;
+                let row = terminal.screen_lines() / 2 + 1;
+                let btn = if delta_value > 0 { 64 } else { 65 };
+                let mut content = vec![];
+                for _ in 0..delta_value.abs() {
+                    if mode.contains(TermMode::SGR_MOUSE) {
+                        content.extend(
+                            format!("\x1b[<{btn};{col};{row}M").into_bytes(),
+                        );
+                    } else {
+                        let c = |v: usize| (32 + v.min(223)) as u8;
+                        content.extend([
+                            0x1b,
+                            b'[',
+                            b'M',
+                            32 + btn as u8,
+                            c(col),
+                            c(row),
+                        ]);
+                    }
+                }
+                self.notifier.notify(content);
+            } else if terminal
                 .mode()
                 .contains(TermMode::ALTERNATE_SCROLL | TermMode::ALT_SCREEN)
             {

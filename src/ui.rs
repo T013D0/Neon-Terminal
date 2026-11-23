@@ -21,12 +21,22 @@ pub fn now() -> i64 {
 
 /// Pestaña tipo cápsula. La activa tiene fondo; el punto lleva el color de la
 /// pestaña (rojo por defecto). Se puede arrastrar.
+/// Marca de una pestaña (qué pasa en ella cuando no la estás mirando).
+#[derive(Clone, Copy, PartialEq)]
+pub enum Badge {
+    None,
+    Activity,
+    Attention,
+    Working,
+}
+
 pub fn tab(
     ui: &mut egui::Ui,
     title: &str,
     active: bool,
     color: Option<Color32>,
     dragging: bool,
+    badge: Badge,
 ) -> egui::Response {
     let title = truncate(title, 28);
     let text_color = if active { pal().text } else { pal().muted };
@@ -62,7 +72,26 @@ pub fn tab(
         (None, true) => pal().red,
         (None, false) => pal().border,
     };
-    p.circle_filled(pos2(rect.min.x + 14.0, rect.center().y), 3.5, dot_c);
+    let center = pos2(rect.min.x + 14.0, rect.center().y);
+    match badge {
+        Badge::None => {
+            p.circle_filled(center, 3.5, dot_c);
+        }
+        Badge::Activity => {
+            p.circle_filled(center, 3.5, pal().text);
+        }
+        Badge::Attention => {
+            p.circle_filled(center, 5.5, pal().red.gamma_multiply(0.35));
+            p.circle_filled(center, 3.5, pal().red);
+        }
+        Badge::Working => {
+            let t = ui.input(|i| i.time) as f32;
+            let k = 0.55 + 0.45 * (t * 4.0).sin();
+            p.circle_filled(center, 3.5, pal().red.gamma_multiply(k));
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(80));
+        }
+    }
     if let (Some(c), true) = (color, active) {
         p.hline(
             (rect.min.x + 10.0)..=(rect.max.x - 10.0),
@@ -114,6 +143,8 @@ pub struct PaneBehavior<'a> {
     pub rects: Vec<(u64, Rect)>,
     /// Opacidad del fondo de los paneles (1 = sólido).
     pub opacity: f32,
+    pub copy_on_select: bool,
+    pub middle_paste: bool,
 }
 
 impl egui_tiles::Behavior<Pane> for PaneBehavior<'_> {
@@ -146,6 +177,22 @@ impl egui_tiles::Behavior<Pane> for PaneBehavior<'_> {
             self.cmds.push(Cmd::FocusPane(pane.id));
         }
         let id = pane.id;
+        if self.copy_on_select
+            && ui.input(|i| i.pointer.primary_released())
+            && (resp.drag_stopped() || resp.hovered())
+        {
+            let sel = pane.backend.selectable_content();
+            if !sel.trim().is_empty() {
+                ui.ctx().copy_text(sel);
+            }
+        }
+        if self.middle_paste
+            && resp.hovered()
+            && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Middle))
+        {
+            self.cmds.push(Cmd::FocusPane(id));
+            self.cmds.push(Cmd::Paste(id));
+        }
         let has_selection = !pane.backend.selectable_content().trim().is_empty();
         resp.context_menu(|ui| {
             ui.set_min_width(220.0);

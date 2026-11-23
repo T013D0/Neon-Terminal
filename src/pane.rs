@@ -41,6 +41,10 @@ pub struct Pane {
     pub profile: ProfileKind,
     pub backend: TerminalBackend,
     pub title: Option<String>,
+    /// Sonó la campana mientras no mirabas este panel.
+    pub attention: bool,
+    /// Hubo salida nueva mientras no mirabas este panel.
+    pub activity: bool,
     pub cwd: String,
     pub log: SessionLog,
     pub git: GitWatcher,
@@ -95,6 +99,8 @@ impl Pane {
             profile: profile.kind,
             backend,
             title: None,
+            attention: false,
+            activity: false,
             cwd: start_dir
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default(),
@@ -283,6 +289,43 @@ impl Pane {
     }
 
     /// Pega texto (como si se escribiera), respetando el "bracketed paste".
+    /// ¿Hay un Claude Code corriendo en este panel?
+    pub fn is_claude(&self) -> bool {
+        let cmd = self.running_cmd.as_deref().unwrap_or("").to_lowercase();
+        let title = self.title.as_deref().unwrap_or("");
+        let first = cmd.split_whitespace().next().unwrap_or("");
+        let first = first.rsplit(['/', '\\']).next().unwrap_or("");
+        first.trim_end_matches(".exe") == "claude"
+            || title.contains("Claude Code")
+            || title.starts_with('✳')
+    }
+
+    /// Claude Code pone una animación braille al inicio del título mientras trabaja.
+    pub fn is_working(&self) -> bool {
+        self.title
+            .as_deref()
+            .and_then(|t| t.chars().next())
+            .is_some_and(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
+    }
+
+    /// Rutas listas para escribir en esta shell (con comillas si hay espacios).
+    pub fn format_paths(&self, paths: &[PathBuf]) -> String {
+        let mut out = String::new();
+        for p in paths {
+            let s = match self.profile {
+                ProfileKind::Wsl => crate::profiles::to_wsl_path(p),
+                ProfileKind::GitBash => crate::profiles::to_forward_slashes(p),
+                _ => p.to_string_lossy().into_owned(),
+            };
+            if s.contains(char::is_whitespace) {
+                out.push_str(&format!("\"{s}\" "));
+            } else {
+                out.push_str(&format!("{s} "));
+            }
+        }
+        out
+    }
+
     pub fn paste(&mut self, text: &str) {
         let bracketed = self
             .backend

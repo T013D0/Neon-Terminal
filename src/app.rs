@@ -13,6 +13,7 @@ use crate::session::{self, LayoutNode, Session, TabState, WinState};
 use crate::settings::{self, Backdrop, Settings};
 use crate::theme::{self, pal};
 use crate::ui::{self, PaneBehavior, WINDOW_BUTTON_W, WindowButton, now, popup_frame};
+use crate::update::{self, UpdateMsg, UpdateState};
 use crate::workspace::{self, Dir, DropZone, Node, Workspace, first_pane_id, tab_colors};
 use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Frame, Key, Layout, Margin, Modifiers, Pos2,
@@ -122,6 +123,10 @@ pub struct App {
     keymap: Vec<(egui::KeyboardShortcut, Cmd)>,
     /// Se confirmó cerrar la app aunque hubiera comandos corriendo.
     allow_close: bool,
+    /// Actualizaciones desde GitHub.
+    update: UpdateState,
+    upd_tx: Sender<UpdateMsg>,
+    upd_rx: Receiver<UpdateMsg>,
 }
 
 fn term_font(size: f32) -> TerminalFont {
@@ -228,6 +233,7 @@ impl App {
         };
         let settings = settings::get();
         let font_size = settings.font_size.clamp(8.0, 32.0);
+        let (upd_tx, upd_rx) = mpsc::channel();
         let mut app = Self {
             windows: vec![Win::new(0, ViewportId::ROOT, None)],
             pending: vec![],
@@ -255,6 +261,9 @@ impl App {
             settings_state: Default::default(),
             keymap: vec![],
             allow_close: false,
+            update: UpdateState::Idle,
+            upd_tx,
+            upd_rx,
         };
         app.apply_settings(&cc.egui_ctx);
         let ctx = cc.egui_ctx.clone();
@@ -266,7 +275,111 @@ impl App {
                 app.windows[0].workspaces.push(Workspace::new(p));
             }
         }
+        // Una vez al día, busca versiones nuevas en segundo plano.
+        if app.settings.check_updates && app.update_enabled() && update::auto_check_due() {
+            app.start_check(&ctx, false);
+        }
         app
+    }
+
+    // ───────────────────────── Actualizaciones ─────────────────────────
+
+    /// Hay un repositorio configurado (o una dirección de prueba).
+    fn update_enabled(&self) -> bool {
+        update::valid_repo(update::DEFAULT_REPO)
+    }
+
+    fn start_check(&mut self, ctx: &egui::Context, manual: bool) {
+        if matches!(
+            self.update,
+            UpdateState::Checking | UpdateState::Downloading(_)
+        ) {
+            return;
+        }
+        if !self.update_enabled() {
+            if manual {
+                self.update = UpdateState::Error(
+                    "Escribe el repositorio de GitHub como usuario/nombre.".into(),
+                );
+            }
+            return;
+        }
+        // Si ya hay una versión disponible, el chequeo automático no la borra.
+        if manual || !matches!(self.update, UpdateState::Available(_)) {
+            self.update = UpdateState::Checking;
+        }
+        update::check_async(
+            update::DEFAULT_REPO.to_string(),
+            manual,
+            self.upd_tx.clone(),
+            ctx.clone(),
+        );
+    }
+
+    fn pump_updates(&mut self, ctx: &egui::Context) {
+        while let Ok(m) = self.upd_rx.try_recv() {
+            match m {
+                UpdateMsg::Checked { result, manual } => match result {
+                    Ok(Some(r)) => {
+                        update::mark_checked();
+                        if !matches!(&self.update, UpdateState::Available(old) if old.version == r.version)
+                        {
+                            self.toast_all(format!(
+                                "Neon v{} disponible: Ajustes → Actualizaciones",
+                                r.version
+                            ));
+                        }
+                        self.update = UpdateState::Available(r);
+                    }
+                    Ok(None) => {
+                        update::mark_checked();
+                        self.update = if manual {
+                            UpdateState::UpToDate
+                        } else {
+                            UpdateState::Idle
+                        };
+                    }
+                    Err(e) => {
+                        // El chequeo automático falla en silencio (sin internet, etc.).
+                        self.update = if manual {
+                            UpdateState::Error(e)
+                        } else {
+                            UpdateState::Idle
+                        };
+                    }
+                },
+                UpdateMsg::Downloaded(Ok(path)) => match update::launch_installer(&path) {
+                    Ok(()) => {
+                        // El instalador reemplaza a Neon y lo vuelve a abrir: cerramos sin preguntar.
+                        self.save_session();
+                        self.allow_close = true;
+                        ctx.send_viewport_cmd_to(ViewportId::ROOT, egui::ViewportCommand::Close);
+                    }
+                    Err(e) => {
+                        self.update =
+                            UpdateState::Error(format!("No pude abrir el instalador: {e}"));
+                    }
+                },
+                UpdateMsg::Downloaded(Err(e)) => self.update = UpdateState::Error(e),
+            }
+        }
+    }
+
+    /// Aviso en todas las ventanas (no sabemos cuál está mirando el usuario).
+    fn toast_all(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        for w in &mut self.windows {
+            w.toast(msg.clone());
+        }
+    }
+
+    fn apply_update(&mut self, ctx: &egui::Context) {
+        if let UpdateState::Available(r) = self.update.clone() {
+            self.update = UpdateState::Downloading(r.version.clone());
+            update::download_async(r, self.upd_tx.clone(), ctx.clone());
+        } else {
+            self.toast_all("No hay ninguna actualización pendiente.");
+        }
     }
 
     // ───────────────────────── Ajustes ─────────────────────────
@@ -580,8 +693,12 @@ impl App {
     /// Eventos de las PTY y de las shells; avisos de comandos largos; links.
     fn pump_events(&mut self, ctx: &egui::Context) {
         let mut exited = vec![];
+        let mut bells: Vec<u64> = vec![];
+        let mut woke: Vec<u64> = vec![];
         while let Ok((id, ev)) = self.pty_rx.try_recv() {
             match ev {
+                PtyEvent::Bell => bells.push(id),
+                PtyEvent::Wakeup => woke.push(id),
                 PtyEvent::Exit | PtyEvent::ChildExit(_) => exited.push(id),
                 PtyEvent::Title(t) => {
                     if let Some(p) = self.pane_mut(id) {
@@ -598,12 +715,43 @@ impl App {
         let mut recorded = false;
         let history = self.history.as_ref();
         let notify_on = self.settings.notify;
+        let notify_bell = self.settings.notify_bell;
         let long_cmd = Duration::from_secs(self.settings.notify_after_secs.max(1));
         for w in &mut self.windows {
             let mut toast = None;
             for (ti, ws) in w.workspaces.iter_mut().enumerate() {
                 let visible = w.focused && ti == w.active;
+                let shown = ti == w.active;
                 for p in ws.panes_mut() {
+                    if shown {
+                        p.activity = false;
+                    }
+                    if visible {
+                        p.attention = false;
+                    } else {
+                        if woke.contains(&p.id) && !shown {
+                            p.activity = true;
+                        }
+                        if bells.contains(&p.id) && !p.attention {
+                            p.attention = true;
+                            if notify_bell {
+                                notify(
+                                    if p.is_claude() {
+                                        "Claude Code te necesita"
+                                    } else {
+                                        "Aviso de la terminal"
+                                    },
+                                    format!("{} · {}", p.display_title(), ui::short_path(&p.cwd)),
+                                );
+                                ctx.send_viewport_cmd_to(
+                                    w.viewport,
+                                    egui::ViewportCommand::RequestUserAttention(
+                                        egui::UserAttentionType::Informational,
+                                    ),
+                                );
+                            }
+                        }
+                    }
                     for f in p.poll_events() {
                         let e = &f.event;
                         if let (Some(h), Some(cmd)) = (history, e.command.as_deref()) {
@@ -941,6 +1089,17 @@ impl App {
                 self.settings_open = Some(win_id);
                 self.settings_state.capturing = None;
             }
+            Cmd::OpenUpdates => {
+                self.settings_open = Some(win_id);
+                self.settings_state.capturing = None;
+                self.settings_state.section = crate::settings_ui::Section::Actualizaciones;
+            }
+            Cmd::CheckUpdates => {
+                self.settings_open = Some(win_id);
+                self.settings_state.section = crate::settings_ui::Section::Actualizaciones;
+                self.start_check(ctx, true);
+            }
+            Cmd::ApplyUpdate => self.apply_update(ctx),
             Cmd::Search => {
                 let w = &mut self.windows[wi];
                 w.popup = None;
@@ -965,11 +1124,44 @@ impl App {
                 }
             }
             Cmd::Paste(id) => {
-                let text = arboard::Clipboard::new().and_then(|mut c| c.get_text());
-                match (text, self.pane_mut(id)) {
-                    (Ok(t), Some(p)) => p.paste(&t),
-                    (Err(_), _) => self.windows[wi].toast("El portapapeles no tiene texto"),
-                    _ => {}
+                let mut cb = arboard::Clipboard::new();
+                let files = cb
+                    .as_mut()
+                    .ok()
+                    .and_then(|c| c.get().file_list().ok())
+                    .filter(|f| !f.is_empty());
+                let text = cb.as_mut().ok().and_then(|c| c.get_text().ok());
+                let has_image = cb.as_mut().ok().is_some_and(|c| c.get_image().is_ok());
+                let mut msg = None;
+                if let Some(p) = self.pane_mut(id) {
+                    if let Some(f) = files {
+                        let s = p.format_paths(&f);
+                        p.paste(&s);
+                    } else if let Some(t) = text.filter(|t| !t.is_empty()) {
+                        p.paste(&t);
+                    } else if has_image && p.is_claude() {
+                        // Claude Code recibe la imagen del portapapeles con Alt+V.
+                        p.insert("\x1bv");
+                    } else if has_image {
+                        msg =
+                            Some("El portapapeles tiene una imagen; pégala dentro de Claude Code");
+                    } else {
+                        msg = Some("El portapapeles está vacío");
+                    }
+                }
+                if let Some(m) = msg {
+                    self.windows[wi].toast(m);
+                }
+            }
+            Cmd::Raw(id, text) => {
+                if let Some(p) = self.pane_mut(id) {
+                    p.insert(&text);
+                }
+            }
+            Cmd::PastePaths(id, paths) => {
+                if let Some(p) = self.pane_mut(id) {
+                    let s = p.format_paths(&paths);
+                    p.paste(&s);
                 }
             }
             Cmd::ClearPane(id) => {
@@ -1260,6 +1452,8 @@ impl App {
             cmds: vec![],
             rects: vec![],
             opacity,
+            copy_on_select: self.settings.copy_on_select,
+            middle_paste: self.settings.middle_paste,
         };
         egui::CentralPanel::default()
             .frame(Frame::new().fill(pal().bg).inner_margin(Margin {
@@ -1305,9 +1499,15 @@ impl App {
                 &mut self.settings,
                 &mut self.settings_state,
                 &self.profiles,
+                &self.update,
             );
             if out.changed {
                 self.settings_changed(ctx);
+            }
+            match out.update {
+                Some(crate::settings_ui::UpdateAction::Check) => self.start_check(ctx, true),
+                Some(crate::settings_ui::UpdateAction::Apply) => self.apply_update(ctx),
+                None => {}
             }
             if out.close {
                 self.settings_open = None;
@@ -1342,6 +1542,36 @@ impl App {
             return;
         }
         let pressed = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
+        // Claude Code: Shift+Enter, Ctrl+V inteligente y archivos soltados.
+        {
+            let w = &self.windows[wi];
+            let a = w.active.min(w.workspaces.len().saturating_sub(1));
+            if let Some(ws) = w.workspaces.get(a) {
+                let fid = ws.focused;
+                let claude = ws.focused_pane().is_some_and(|p| p.is_claude());
+                if self.settings.shift_enter_newline
+                    && claude
+                    && pressed(Modifiers::SHIFT, Key::Enter)
+                {
+                    cmds.push(Cmd::Raw(fid, "\n".into()));
+                }
+                if self.settings.smart_paste && pressed(Modifiers::CTRL, Key::V) {
+                    ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Paste(_))));
+                    cmds.push(Cmd::Paste(fid));
+                }
+                let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
+                    i.raw
+                        .dropped_files
+                        .iter()
+                        .filter_map(|f| f.path.clone())
+                        .collect()
+                });
+                if !dropped.is_empty() {
+                    cmds.push(Cmd::FocusPane(fid));
+                    cmds.push(Cmd::PastePaths(fid, dropped));
+                }
+            }
+        }
         // Atajos configurables (Ajustes → Atajos).
         for (sc, c) in &self.keymap {
             if ctx.input_mut(|i| i.consume_shortcut(sc)) {
@@ -1410,6 +1640,10 @@ impl App {
         let mut tabbar = Rect::NOTHING;
         let profiles: Vec<(ProfileKind, &'static str)> =
             self.profiles.iter().map(|p| (p.kind, p.name)).collect();
+        let new_version = match &self.update {
+            UpdateState::Available(r) => Some(r.version.clone()),
+            _ => None,
+        };
         let logo = self.logo.clone();
         let bar_opacity = self.opacity();
         let w = &mut self.windows[wi];
@@ -1466,7 +1700,19 @@ impl App {
                         let ws = &w.workspaces[i];
                         let color = ws.color.and_then(|c| tab_colors().get(c as usize).copied());
                         let title = ws.title();
-                        let r = ui::tab(ui, &title, i == w.active, color, drag_src == Some(i));
+                        let badge = if i == w.active {
+                            ui::Badge::None
+                        } else if ws.panes().any(|p| p.attention) {
+                            ui::Badge::Attention
+                        } else if ws.panes().any(|p| p.is_working()) {
+                            ui::Badge::Working
+                        } else if ws.panes().any(|p| p.activity) {
+                            ui::Badge::Activity
+                        } else {
+                            ui::Badge::None
+                        };
+                        let r =
+                            ui::tab(ui, &title, i == w.active, color, drag_src == Some(i), badge);
                         tab_rects.push(r.rect);
                         if r.clicked() {
                             cmds.push(Cmd::SelectTab(i));
@@ -1621,13 +1867,35 @@ impl App {
                     );
 
                     // Espacio libre: arrastrar mueve la ventana.
-                    let free = (ui.available_width() - 3.0 * WINDOW_BUTTON_W - 40.0).max(0.0);
+                    let chip_w = if new_version.is_some() { 96.0 } else { 0.0 };
+                    let free =
+                        (ui.available_width() - 3.0 * WINDOW_BUTTON_W - 40.0 - chip_w).max(0.0);
                     let (_, dragbar) =
                         ui.allocate_exact_size(vec2(free, BAR_H), Sense::click_and_drag());
                     if dragbar.double_clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
                     } else if dragbar.drag_started_by(egui::PointerButton::Primary) {
                         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    }
+
+                    // Aviso de versión nueva.
+                    if let Some(v) = &new_version {
+                        let chip = ui
+                            .add_sized(
+                                vec2(88.0, 24.0),
+                                egui::Button::new(
+                                    RichText::new(format!("↑ v{v}"))
+                                        .size(12.0)
+                                        .color(Color32::WHITE),
+                                )
+                                .fill(pal().red)
+                                .corner_radius(CornerRadius::same(12)),
+                            )
+                            .on_hover_text("Hay una versión nueva de Neon");
+                        if chip.clicked() {
+                            cmds.push(Cmd::OpenUpdates);
+                        }
+                        ui.add_space(8.0);
                     }
 
                     // Ajustes (ícono de engranaje de la Nerd Font).
@@ -2229,6 +2497,7 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_events(ctx);
+        self.pump_updates(ctx);
 
         // Ventana principal.
         self.window_ui(ctx, 0);
