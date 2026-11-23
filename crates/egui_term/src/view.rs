@@ -535,7 +535,12 @@ fn process_left_button(
     pressed: bool,
 ) -> InputAction {
     let terminal_mode = backend.last_content().terminal_mode;
-    if terminal_mode.intersects(TermMode::MOUSE_MODE) {
+    // Patched (neon): con Shift se selecciona aunque la app pida el mouse
+    // (igual que en otras terminales); si la selección empezó local, el
+    // soltar también es local aunque ya no se mantenga Shift.
+    let select = crate::MOUSE_SELECT.load(std::sync::atomic::Ordering::Relaxed);
+    let local = (modifiers.shift == select) || (state.is_dragged && !pressed);
+    if terminal_mode.intersects(TermMode::MOUSE_MODE) && !local {
         InputAction::BackendCall(BackendCommand::MouseReport(
             MouseButton::LeftButton,
             *modifiers,

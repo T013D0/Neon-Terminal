@@ -50,6 +50,8 @@ pub struct Settings {
     pub check_updates: bool,
     /// Al seleccionar texto se copia solo (como en las terminales de Linux).
     pub copy_on_select: bool,
+    /// Arrastrar selecciona aunque la app (Claude Code) use el mouse; Shift se lo manda a la app.
+    pub mouse_select: bool,
     /// Clic central pega el portapapeles.
     pub middle_paste: bool,
     /// Shift+Enter = salto de línea cuando corre Claude Code.
@@ -78,6 +80,7 @@ impl Default for Settings {
             custom_themes: vec![],
             check_updates: true,
             copy_on_select: true,
+            mouse_select: true,
             middle_paste: true,
             shift_enter_newline: true,
             smart_paste: true,

@@ -698,6 +698,8 @@ impl App {
         while let Ok((id, ev)) = self.pty_rx.try_recv() {
             match ev {
                 PtyEvent::Bell => bells.push(id),
+                // OSC 52: la app (p. ej. Claude Code) pide copiar al portapapeles.
+                PtyEvent::ClipboardStore(_, text) => ctx.copy_text(text),
                 PtyEvent::Wakeup => woke.push(id),
                 PtyEvent::Exit | PtyEvent::ChildExit(_) => exited.push(id),
                 PtyEvent::Title(t) => {
@@ -2496,6 +2498,7 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui_term::MOUSE_SELECT.store(self.settings.mouse_select, std::sync::atomic::Ordering::Relaxed);
         self.pump_events(ctx);
         self.pump_updates(ctx);
 

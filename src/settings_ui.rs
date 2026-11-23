@@ -408,6 +408,10 @@ fn terminal(ui: &mut egui::Ui, s: &mut Settings, profiles: &[Profile]) {
         &mut s.copy_on_select,
         "Copiar automáticamente al seleccionar texto",
     );
+    ui.checkbox(
+        &mut s.mouse_select,
+        "Arrastrar selecciona aunque la app use el mouse (Claude Code); con Shift el mouse va a la app",
+    );
     ui.checkbox(&mut s.middle_paste, "Clic central pega el portapapeles");
     ui.checkbox(
         &mut s.smart_paste,
