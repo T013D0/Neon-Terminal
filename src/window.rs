@@ -41,6 +41,18 @@ pub fn global_cursor_px() -> Option<(f32, f32)> {
     }
 }
 
+/// Si la tecla V está apretada (None si el sistema no lo informa).
+pub fn v_key_down() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        Some(win::v_down())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// Si el botón izquierdo está apretado (None si el sistema no lo informa).
 pub fn left_button_down() -> Option<bool> {
     #[cfg(windows)]
@@ -164,6 +176,10 @@ mod win {
     pub fn cursor() -> Option<(f32, f32)> {
         let mut p = Point { x: 0, y: 0 };
         (unsafe { GetCursorPos(&mut p) } != 0).then_some((p.x as f32, p.y as f32))
+    }
+
+    pub fn v_down() -> bool {
+        (unsafe { GetAsyncKeyState(0x56) } as u16 & 0x8000) != 0
     }
 
     pub fn left_down() -> bool {

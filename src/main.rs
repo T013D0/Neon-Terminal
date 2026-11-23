@@ -16,6 +16,7 @@ mod theme;
 mod themes;
 mod ui;
 mod update;
+mod vsel;
 mod window;
 mod workspace;
 

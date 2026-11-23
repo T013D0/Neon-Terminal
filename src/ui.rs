@@ -149,6 +149,119 @@ pub struct PaneBehavior<'a> {
     pub switch: f32,
 }
 
+impl PaneBehavior<'_> {
+    /// Selección que sobrevive al scroll de apps en pantalla alterna con mouse.
+    fn virtual_selection(
+        &mut self,
+        ui: &mut egui::Ui,
+        pane: &mut Pane,
+        resp: &egui::Response,
+        term_rect: Rect,
+    ) {
+        use std::sync::atomic::Ordering;
+        let mode = pane.backend.last_content().terminal_mode;
+        let alt_mouse = mode.contains(egui_term::TerminalMode::ALT_SCREEN)
+            && mode.intersects(egui_term::TerminalMode::MOUSE_MODE);
+        if !alt_mouse {
+            pane.vsel = None;
+            return;
+        }
+        let (pressed, down, released, shift, pos, wheel) = ui.input(|i| {
+            (
+                i.pointer.primary_pressed(),
+                i.pointer.primary_down(),
+                i.pointer.primary_released(),
+                i.modifiers.shift,
+                i.pointer.latest_pos(),
+                i.events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::MouseWheel { .. })),
+            )
+        });
+        let local = shift != egui_term::MOUSE_SELECT.load(Ordering::Relaxed);
+        let size = pane.backend.last_content().terminal_size;
+        let (cw, ch) = (size.cell_width as f32, size.cell_height as f32);
+        let rows = pane.screen_rows();
+        let (n, cols) = (rows.len(), rows.first().map_or(0, |r| r.len()));
+        if n == 0 || cols == 0 || cw <= 0.0 || ch <= 0.0 {
+            return;
+        }
+        let cell_at = |p: egui::Pos2| -> (usize, usize) {
+            let c = ((p.x - term_rect.min.x) / cw)
+                .floor()
+                .clamp(0.0, (cols - 1) as f32);
+            let r = ((p.y - term_rect.min.y) / ch)
+                .floor()
+                .clamp(0.0, (n - 1) as f32);
+            (r as usize, c as usize)
+        };
+        if pressed && local && resp.hovered() {
+            if let Some(p) = pos {
+                let (r, c) = cell_at(p);
+                pane.vsel = Some(crate::vsel::VSel::new(rows.clone(), r, c));
+            }
+        } else if pressed {
+            pane.vsel = None;
+        }
+        let Some(v) = pane.vsel.as_mut() else { return };
+        if wheel {
+            v.note_wheel();
+        }
+        // Arrastrar fuera del borde = scroll automático.
+        let mut auto = 0;
+        if v.dragging && down {
+            if let Some(p) = pos {
+                if p.y < term_rect.min.y {
+                    auto = 1;
+                } else if p.y > term_rect.max.y {
+                    auto = -1;
+                }
+            }
+        }
+        v.update(rows, pos.map(cell_at));
+        if released && v.dragging {
+            v.dragging = false;
+            if v.moved {
+                let text = v.text();
+                if self.copy_on_select && !text.trim().is_empty() {
+                    ui.ctx().copy_text(text);
+                }
+            } else {
+                pane.vsel = None;
+            }
+        }
+        if auto != 0 {
+            let tick = ui.input(|i| (i.time * 12.0) as i64);
+            let key = egui::Id::new(("vsel_auto", pane.id));
+            let last: i64 = ui.data(|d| d.get_temp(key)).unwrap_or(-1);
+            if tick != last {
+                ui.data_mut(|d| d.insert_temp(key, tick));
+                if let Some(v) = pane.vsel.as_mut() {
+                    v.note_wheel();
+                }
+                pane.scroll_by(auto);
+            }
+        }
+        if let Some(v) = pane.vsel.as_ref().filter(|v| v.moved || v.dragging) {
+            let p = pal();
+            for r in 0..n {
+                if let Some((a, b)) = v.cols_on_row(r, cols) {
+                    let rect = Rect::from_min_size(
+                        pos2(
+                            term_rect.min.x + a as f32 * cw,
+                            term_rect.min.y + r as f32 * ch,
+                        ),
+                        vec2((b - a) as f32 * cw, ch),
+                    );
+                    ui.painter()
+                        .rect_filled(rect, 0.0, p.red.gamma_multiply(0.30));
+                }
+            }
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
 impl egui_tiles::Behavior<Pane> for PaneBehavior<'_> {
     fn pane_ui(&mut self, ui: &mut egui::Ui, _tile_id: TileId, pane: &mut Pane) -> UiResponse {
         let p = pal();
@@ -184,10 +297,15 @@ impl egui_tiles::Behavior<Pane> for PaneBehavior<'_> {
             && (resp.drag_stopped() || resp.hovered())
         {
             let sel = pane.backend.selectable_content();
+            let sel = sel.lines().map(str::trim_end).collect::<Vec<_>>().join("\n");
             if !sel.trim().is_empty() {
+                if std::env::var_os("NEON_DEBUG").is_some() {
+                    eprintln!("[neon] copiar selección: {sel:?}");
+                }
                 ui.ctx().copy_text(sel);
             }
         }
+        self.virtual_selection(ui, pane, &resp, term_rect);
         if self.middle_paste
             && resp.hovered()
             && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Middle))

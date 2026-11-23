@@ -1133,6 +1133,9 @@ impl App {
                     .and_then(|c| c.get().file_list().ok())
                     .filter(|f| !f.is_empty());
                 let text = cb.as_mut().ok().and_then(|c| c.get_text().ok());
+                if std::env::var_os("NEON_DEBUG").is_some() {
+                    eprintln!("[neon] pegar: {text:?}");
+                }
                 let has_image = cb.as_mut().ok().is_some_and(|c| c.get_image().is_ok());
                 let mut msg = None;
                 if let Some(p) = self.pane_mut(id) {
@@ -1569,9 +1572,22 @@ impl App {
                 {
                     cmds.push(Cmd::Raw(fid, "\n".into()));
                 }
-                if self.settings.smart_paste && pressed(Modifiers::CTRL, Key::V) {
-                    ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Paste(_))));
-                    cmds.push(Cmd::Paste(fid));
+                if self.settings.smart_paste {
+                    // egui convierte Ctrl+V / Ctrl+Shift+V en un evento de pegado (no en una
+                    // tecla); si el portapapeles solo tiene una imagen no llega ningún evento,
+                    // así que en Windows se mira además el estado de la tecla V.
+                    let paste_ev =
+                        ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))));
+                    let vid = egui::Id::new(("v_was_down", wi));
+                    let v_now = crate::window::v_key_down().unwrap_or(false)
+                        && ctx.input(|i| i.modifiers.ctrl && i.focused);
+                    let v_was: bool = ctx.data(|d| d.get_temp(vid)).unwrap_or(false);
+                    ctx.data_mut(|d| d.insert_temp(vid, v_now));
+                    let image_only = v_now && !v_was && !paste_ev;
+                    if paste_ev || image_only || pressed(Modifiers::CTRL, Key::V) {
+                        ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Paste(_))));
+                        cmds.push(Cmd::Paste(fid));
+                    }
                 }
                 let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
                     i.raw

@@ -45,6 +45,8 @@ pub struct Pane {
     pub attention: bool,
     /// Cuándo se creó (para la animación de aparición).
     pub born: Instant,
+    /// Selección que sigue al contenido cuando una app en pantalla alterna hace scroll.
+    pub vsel: Option<crate::vsel::VSel>,
     /// Hubo salida nueva mientras no mirabas este panel.
     pub activity: bool,
     pub cwd: String,
@@ -103,6 +105,7 @@ impl Pane {
             title: None,
             attention: false,
             born: Instant::now(),
+            vsel: None,
             activity: false,
             cwd: start_dir
                 .map(|p| p.to_string_lossy().into_owned())
@@ -179,6 +182,28 @@ impl Pane {
     pub fn scroll_info(&self) -> (usize, usize, usize) {
         let g = &self.backend.last_content().grid;
         (g.history_size(), g.screen_lines(), g.display_offset())
+    }
+
+    /// Texto de cada fila visible (para seguir el contenido en pantalla alterna).
+    pub fn screen_rows(&self) -> Vec<Vec<char>> {
+        let g = &self.backend.last_content().grid;
+        let off = g.display_offset() as i32;
+        let cols = g.columns();
+        (0..g.screen_lines() as i32)
+            .map(|l| {
+                let row = &g[Line(l - off)];
+                (0..cols)
+                    .map(|c| {
+                        let cell = &row[Column(c)];
+                        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                            ' '
+                        } else {
+                            cell.c
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     pub fn scroll_by(&mut self, lines: i32) {
