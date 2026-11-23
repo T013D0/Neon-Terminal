@@ -251,6 +251,7 @@ Neon trae ayudas para usar el CLI de Claude Code (todas se pueden apagar en Ajus
 - **Seleccionar dentro de Claude Code**: arrastrar selecciona aunque la app capture el mouse (Ajustes → Terminal; con Shift el mouse va a la app); al soltar se copia solo.
 - **Seleccionar copia** automáticamente y el clic central pega, como en Linux.
 - **Animaciones suaves** (se apagan en Ajustes): el cursor se desliza, los paneles y pestañas nuevos entran con fundido, el borde del panel activo se enciende y la paleta aparece deslizándose.
+- **Animación de inicio**: al abrir, el planeta aparece, el anillo entra girando y todo se desvanece hacia la terminal (se apaga en Ajustes).
 - Símbolos como ⏺ ⎿ ✻ se ven con una fuente de respaldo.
 
 ## Actualizaciones

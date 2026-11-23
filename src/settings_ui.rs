@@ -398,6 +398,7 @@ fn terminal(ui: &mut egui::Ui, s: &mut Settings, profiles: &[Profile]) {
         &mut s.animations,
         "Animaciones suaves (cursor, pestañas, paneles y paleta)",
     );
+    ui.checkbox(&mut s.startup_anim, "Animación del logo al abrir Neon");
 
     heading(ui, "Al abrir y cerrar");
     ui.checkbox(

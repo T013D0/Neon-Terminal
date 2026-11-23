@@ -250,11 +250,16 @@ impl<'a> TerminalView<'a> {
         let global_bg =
             self.theme.get_color(Color::Named(NamedColor::Background));
 
-        let mut shapes = vec![Shape::Rect(RectShape::filled(
-            Rect::from_min_max(layout_min, layout_max),
-            CornerRadius::ZERO,
-            global_bg,
-        ))];
+        // Patched (neon): con fondo translúcido el panel ya pinta el color;
+        // pintarlo otra vez aquí lo acumulaba (35 % + 35 % ≈ 58 % opaco).
+        let mut shapes = vec![];
+        if global_bg.a() == 255 {
+            shapes.push(Shape::Rect(RectShape::filled(
+                Rect::from_min_max(layout_min, layout_max),
+                CornerRadius::ZERO,
+                global_bg,
+            )));
+        }
 
         for indexed in content.grid.display_iter() {
             let flags = indexed.cell.flags;

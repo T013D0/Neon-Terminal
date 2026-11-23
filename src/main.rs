@@ -6,6 +6,7 @@ mod commands;
 mod git;
 mod history;
 mod install;
+mod intro;
 mod pane;
 mod profiles;
 mod session;

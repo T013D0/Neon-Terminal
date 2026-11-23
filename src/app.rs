@@ -107,6 +107,7 @@ pub struct App {
     profiles: Vec<Profile>,
     drag: Option<TabDrag>,
     logo: egui::TextureHandle,
+    intro: Option<crate::intro::Intro>,
     error: Option<String>,
     /// Solo la instancia "normal" guarda la sesión (no las abiertas desde el Explorador).
     persist: bool,
@@ -249,6 +250,7 @@ impl App {
             profiles: crate::profiles::available(),
             drag: None,
             logo,
+            intro: None,
             error: None,
             persist: start_dir.is_none(),
             last_save: Instant::now(),
@@ -274,6 +276,12 @@ impl App {
             if let Some(p) = app.spawn_pane(&ctx, start_dir, None) {
                 app.windows[0].workspaces.push(Workspace::new(p));
             }
+        }
+        if app.settings.startup_anim
+            && app.settings.animations
+            && std::env::var_os("NEON_NO_INTRO").is_none()
+        {
+            app.intro = crate::intro::Intro::new(&ctx);
         }
         // Una vez al día, busca versiones nuevas en segundo plano.
         if app.settings.check_updates && app.update_enabled() && update::auto_check_due() {
@@ -2568,6 +2576,11 @@ impl eframe::App for App {
             self.settings.animations,
             std::sync::atomic::Ordering::Relaxed,
         );
+        if let Some(i) = &self.intro {
+            if !i.show(ctx) {
+                self.intro = None;
+            }
+        }
         egui_term::MOUSE_SELECT.store(
             self.settings.mouse_select,
             std::sync::atomic::Ordering::Relaxed,

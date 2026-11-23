@@ -52,6 +52,8 @@ pub struct Settings {
     pub copy_on_select: bool,
     /// Animaciones suaves (cursor, pestañas, paneles, paleta).
     pub animations: bool,
+    /// Animación del logo al abrir Neon.
+    pub startup_anim: bool,
     /// Arrastrar selecciona aunque la app (Claude Code) use el mouse; Shift se lo manda a la app.
     pub mouse_select: bool,
     /// Clic central pega el portapapeles.
@@ -83,6 +85,7 @@ impl Default for Settings {
             check_updates: true,
             copy_on_select: true,
             animations: true,
+            startup_anim: true,
             mouse_select: true,
             middle_paste: true,
             shift_enter_newline: true,

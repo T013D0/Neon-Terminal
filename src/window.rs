@@ -99,6 +99,10 @@ mod win {
         fn IsWindowVisible(hwnd: isize) -> i32;
         fn GetCursorPos(p: *mut Point) -> i32;
         fn GetAsyncKeyState(vk: i32) -> i16;
+        fn GetWindowLongPtrW(hwnd: isize, index: i32) -> isize;
+        fn SetWindowLongPtrW(hwnd: isize, index: i32, value: isize) -> isize;
+        fn SetWindowPos(hwnd: isize, after: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32)
+        -> i32;
     }
 
     #[link(name = "kernel32")]
@@ -114,6 +118,10 @@ mod win {
     const BACKDROP_NONE: u32 = 1;
     const DWMWCP_ROUND: u32 = 2;
     const VK_LBUTTON: i32 = 0x01;
+    const GWL_STYLE: i32 = -16;
+    const WS_SYSMENU: isize = 0x0008_0000;
+    // SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+    const SWP_REFRESH: u32 = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020;
 
     unsafe fn style(hwnd: isize) {
         use std::sync::atomic::Ordering;
@@ -157,6 +165,16 @@ mod win {
             }
         };
         unsafe { DwmExtendFrameIntoClientArea(hwnd, &m) };
+        // Con el marco extendido (Mica/Acrylic) Windows 11 dibuja sus propios botones
+        // de minimizar/maximizar/cerrar encima de los nuestros si la ventana tiene
+        // menú de sistema. Neon dibuja los suyos, así que se lo quitamos.
+        unsafe {
+            let st = GetWindowLongPtrW(hwnd, GWL_STYLE);
+            if st & WS_SYSMENU != 0 {
+                SetWindowLongPtrW(hwnd, GWL_STYLE, st & !WS_SYSMENU);
+                SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_REFRESH);
+            }
+        }
     }
 
     unsafe extern "system" fn each(hwnd: isize, _: isize) -> i32 {

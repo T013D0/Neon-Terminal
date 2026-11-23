@@ -2071,7 +2071,7 @@ dependencies = [
 
 [[package]]
 name = "neon"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -2095,7 +2095,7 @@ dependencies = [
 
 [[package]]
 name = "neon-setup"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "dirs",
  "eframe",
