@@ -659,21 +659,12 @@ fn process_mouse_move(
     let mut actions = vec![];
     // Handle command or selection update based on terminal mode and modifiers
     if state.is_dragged {
-        let terminal_mode = terminal_content.terminal_mode;
-        let cmd = if terminal_mode.contains(TermMode::MOUSE_MOTION)
-            && modifiers.is_none()
-        {
-            InputAction::BackendCall(BackendCommand::MouseReport(
-                MouseButton::LeftMove,
-                *modifiers,
-                state.current_mouse_position_on_grid,
-                true,
-            ))
-        } else {
-            InputAction::BackendCall(BackendCommand::SelectUpdate(
-                cursor_x, cursor_y,
-            ))
-        };
+        // Patched (neon): `is_dragged` solo se activa en una selección local,
+        // así que el movimiento siempre la extiende (antes se reportaba a la
+        // app cuando pedía el movimiento del mouse y la selección no crecía).
+        let cmd = InputAction::BackendCall(BackendCommand::SelectUpdate(
+            cursor_x, cursor_y,
+        ));
 
         actions.push(cmd);
     }
