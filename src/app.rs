@@ -1118,13 +1118,22 @@ impl App {
                 }
             }
             Cmd::CopySelection(id) => {
+                let mut copied = false;
                 if let Some(p) = self.pane_mut(id) {
-                    let text = p.backend.selectable_content();
-                    if !text.is_empty() {
+                    let text = match p.vsel.as_ref().filter(|v| v.moved) {
+                        Some(v) => v.text(),
+                        None => p.backend.selectable_content(),
+                    };
+                    if !text.trim().is_empty() {
                         ctx.copy_text(text);
+                        copied = true;
                     }
                 }
+                if copied {
+                    self.windows[wi].toast("Copiado");
+                }
             }
+            Cmd::Toast(m) => self.windows[wi].toast(m),
             Cmd::Paste(id) => {
                 let mut cb = arboard::Clipboard::new();
                 let files = cb
@@ -1571,6 +1580,17 @@ impl App {
                     && pressed(Modifiers::SHIFT, Key::Enter)
                 {
                     cmds.push(Cmd::Raw(fid, "\n".into()));
+                }
+                // Con una selección que siguió al scroll, Ctrl+C y Ctrl+Shift+C la copian.
+                let vsel_ready = ws
+                    .focused_pane()
+                    .and_then(|p| p.vsel.as_ref())
+                    .is_some_and(|v| v.moved && !v.dragging);
+                if vsel_ready
+                    && ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)))
+                {
+                    ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Copy)));
+                    cmds.push(Cmd::CopySelection(fid));
                 }
                 if self.settings.smart_paste {
                     // egui convierte Ctrl+V / Ctrl+Shift+V en un evento de pegado (no en una

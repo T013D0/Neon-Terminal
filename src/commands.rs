@@ -49,6 +49,8 @@ pub enum Cmd {
     PromptNext,
     CopySelection(u64),
     Paste(u64),
+    /// Muestra un aviso breve.
+    Toast(String),
     /// Escribe texto tal cual en la PTY (sin tocar la línea del prompt).
     Raw(u64, String),
     /// Archivos soltados o copiados: se escriben como rutas.

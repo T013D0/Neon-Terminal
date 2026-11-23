@@ -225,6 +225,7 @@ impl PaneBehavior<'_> {
                 let text = v.text();
                 if self.copy_on_select && !text.trim().is_empty() {
                     ui.ctx().copy_text(text);
+                    self.cmds.push(Cmd::Toast("Copiado".into()));
                 }
             } else {
                 pane.vsel = None;
@@ -297,7 +298,11 @@ impl egui_tiles::Behavior<Pane> for PaneBehavior<'_> {
             && (resp.drag_stopped() || resp.hovered())
         {
             let sel = pane.backend.selectable_content();
-            let sel = sel.lines().map(str::trim_end).collect::<Vec<_>>().join("\n");
+            let sel = sel
+                .lines()
+                .map(str::trim_end)
+                .collect::<Vec<_>>()
+                .join("\n");
             if !sel.trim().is_empty() {
                 if std::env::var_os("NEON_DEBUG").is_some() {
                     eprintln!("[neon] copiar selección: {sel:?}");
