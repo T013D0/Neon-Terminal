@@ -1,0 +1,18 @@
+[package]
+name = "neon-setup"
+version = "0.1.0"
+edition = "2024"
+description = "Instalador de Neon"
+
+[[bin]]
+name = "NeonSetup"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.31"
+egui = "0.31"
+dirs = "7.0.0"
+raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

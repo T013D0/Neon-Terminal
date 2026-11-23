@@ -1,0 +1,36 @@
+[workspace]
+members = [".", "installer"]
+
+[package]
+name = "neon"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alacritty_terminal = "0.25"
+anyhow = "1.0.104"
+arboard = "3"
+dirs = "7.0.0"
+eframe = "0.31"
+egui = "0.31"
+egui_term = { path = "crates/egui_term" }
+egui_tiles = "0.12"
+notify-rust = "4"
+open = "5"
+raw-window-handle = "0.6"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+toml = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+
+# Ícono y datos del .exe (solo al compilar en Windows).
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 4
