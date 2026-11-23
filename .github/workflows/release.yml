@@ -1,0 +1,44 @@
+# Publica un release con NeonSetup.exe cada vez que subes un tag como v0.2.0.
+# Neon busca ahí las actualizaciones (Ajustes → Actualizaciones).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: El tag debe coincidir con la versión de Cargo.toml
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "El tag $GITHUB_REF_NAME no coincide con la versión $v de Cargo.toml"
+            exit 1
+          fi
+
+      # El instalador lleva neon.exe adentro: primero Neon, después el instalador.
+      - name: Compilar Neon
+        run: cargo build --release -p neon
+
+      - name: Compilar el instalador
+        run: cargo build --release -p neon-setup
+
+      - name: Publicar el release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" target/release/NeonSetup.exe \
+            --title "Neon $GITHUB_REF_NAME" --generate-notes
