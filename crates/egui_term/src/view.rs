@@ -327,9 +327,29 @@ impl<'a> TerminalView<'a> {
             // Handle cursor rendering
             if content.grid.cursor.point == indexed.point {
                 let cursor_color = self.theme.get_color(content.cursor.fg);
+                // Patched (neon): el cursor se desliza en vez de saltar.
+                let (cx, cy) = if crate::ANIMATIONS
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    let ctx = painter.ctx();
+                    (
+                        ctx.animate_value_with_time(
+                            self.widget_id.with("cur_x"),
+                            x,
+                            0.07,
+                        ),
+                        ctx.animate_value_with_time(
+                            self.widget_id.with("cur_y"),
+                            y,
+                            0.07,
+                        ),
+                    )
+                } else {
+                    (x, y)
+                };
                 shapes.push(Shape::Rect(RectShape::filled(
                     Rect::from_min_size(
-                        Pos2::new(x, y),
+                        Pos2::new(cx, cy),
                         Vec2::new(cell_width, cell_height),
                     ),
                     CornerRadius::default(),
@@ -535,11 +555,11 @@ fn process_left_button(
     pressed: bool,
 ) -> InputAction {
     let terminal_mode = backend.last_content().terminal_mode;
-    // Patched (neon): con Shift se selecciona aunque la app pida el mouse
-    // (igual que en otras terminales); si la selección empezó local, el
+    // Patched (neon): se selecciona aunque la app pida el mouse (con Shift
+    // en el modo contrario); si la selección empezó local, el
     // soltar también es local aunque ya no se mantenga Shift.
     let select = crate::MOUSE_SELECT.load(std::sync::atomic::Ordering::Relaxed);
-    let local = (modifiers.shift == select) || (state.is_dragged && !pressed);
+    let local = (modifiers.shift != select) || (state.is_dragged && !pressed);
     if terminal_mode.intersects(TermMode::MOUSE_MODE) && !local {
         InputAction::BackendCall(BackendCommand::MouseReport(
             MouseButton::LeftButton,

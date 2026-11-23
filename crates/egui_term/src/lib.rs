@@ -7,7 +7,12 @@ mod view;
 
 /// Patched (neon): arrastrar selecciona aunque la app use el mouse (Shift se lo
 /// manda a la app). Lo fija la aplicación según Ajustes.
-pub static MOUSE_SELECT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub static MOUSE_SELECT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// Patched (neon): animaciones (cursor suave). Lo fija la aplicación.
+pub static ANIMATIONS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
 
 pub use backend::settings::BackendSettings;
 pub use backend::{BackendCommand, PtyEvent, TerminalBackend, TerminalMode};

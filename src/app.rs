@@ -1431,6 +1431,17 @@ impl App {
             }
         }
 
+        let switch = {
+            let w = &self.windows[wi];
+            let cur = w.active.min(w.workspaces.len() - 1);
+            let id = egui::Id::new(("tabsw", win_id));
+            let (last, since): (usize, Instant) = ctx
+                .data_mut(|d| d.get_temp(id))
+                .unwrap_or((cur, Instant::now() - Duration::from_secs(9)));
+            let since = if last != cur { Instant::now() } else { since };
+            ctx.data_mut(|d| d.insert_temp(id, (cur, since)));
+            (since.elapsed().as_secs_f32() / 0.16).min(1.0)
+        };
         let dragging = self.drag.as_ref().is_some_and(|d| d.active);
         let opacity = self.opacity();
         let input_enabled = {
@@ -1456,6 +1467,7 @@ impl App {
             opacity,
             copy_on_select: self.settings.copy_on_select,
             middle_paste: self.settings.middle_paste,
+            switch,
         };
         egui::CentralPanel::default()
             .frame(Frame::new().fill(pal().bg).inner_margin(Margin {
@@ -2132,6 +2144,7 @@ impl App {
         let items: Vec<PaletteItem> = palette_items(&self.profiles, active_tab, &titles);
         let w = &mut self.windows[wi];
         let Some(ps) = w.palette.as_mut() else {
+            ctx.data_mut(|d| d.remove::<Instant>(egui::Id::new(("palette_in", w.id))));
             return out;
         };
 
@@ -2166,9 +2179,26 @@ impl App {
             chosen = Some(matches[ps.selected].1);
         }
         let mut close = esc;
+        let slide = {
+            let id = egui::Id::new(("palette_in", w.id));
+            let t0: Instant = ctx.data_mut(|d| d.get_temp(id)).unwrap_or_else(|| {
+                let n = Instant::now();
+                ctx.data_mut(|d| d.insert_temp(id, n));
+                n
+            });
+            let t = (t0.elapsed().as_secs_f32() / 0.16).min(1.0);
+            if t < 1.0 {
+                ctx.request_repaint();
+            }
+            if egui_term::ANIMATIONS.load(std::sync::atomic::Ordering::Relaxed) {
+                -14.0 * (1.0 - t).powi(3)
+            } else {
+                0.0
+            }
+        };
         egui::Area::new(egui::Id::new(("palette", w.id)))
             .order(egui::Order::Foreground)
-            .anchor(Align2::CENTER_TOP, vec2(0.0, 70.0))
+            .anchor(Align2::CENTER_TOP, vec2(0.0, 70.0 + slide))
             .show(ctx, |ui| {
                 popup_frame().inner_margin(Margin::same(14)).show(ui, |ui| {
                     ui.set_width(560.0);
@@ -2498,7 +2528,14 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui_term::MOUSE_SELECT.store(self.settings.mouse_select, std::sync::atomic::Ordering::Relaxed);
+        egui_term::ANIMATIONS.store(
+            self.settings.animations,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        egui_term::MOUSE_SELECT.store(
+            self.settings.mouse_select,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         self.pump_events(ctx);
         self.pump_updates(ctx);
 

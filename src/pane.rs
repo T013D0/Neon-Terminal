@@ -43,6 +43,8 @@ pub struct Pane {
     pub title: Option<String>,
     /// Sonó la campana mientras no mirabas este panel.
     pub attention: bool,
+    /// Cuándo se creó (para la animación de aparición).
+    pub born: Instant,
     /// Hubo salida nueva mientras no mirabas este panel.
     pub activity: bool,
     pub cwd: String,
@@ -100,6 +102,7 @@ impl Pane {
             backend,
             title: None,
             attention: false,
+            born: Instant::now(),
             activity: false,
             cwd: start_dir
                 .map(|p| p.to_string_lossy().into_owned())

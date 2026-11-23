@@ -145,6 +145,8 @@ pub struct PaneBehavior<'a> {
     pub opacity: f32,
     pub copy_on_select: bool,
     pub middle_paste: bool,
+    /// Progreso (0..1) del cambio de pestaña; 1 = sin animación.
+    pub switch: f32,
 }
 
 impl egui_tiles::Behavior<Pane> for PaneBehavior<'_> {
@@ -259,11 +261,25 @@ impl egui_tiles::Behavior<Pane> for PaneBehavior<'_> {
             search_bar(ui, pane, term_rect, focused && self.input_enabled);
         }
 
-        let border = if focused {
-            Stroke::new(1.0_f32, p.red.gamma_multiply(0.45))
+        let anim = egui_term::ANIMATIONS.load(std::sync::atomic::Ordering::Relaxed);
+        let k = if anim {
+            ui.ctx()
+                .animate_bool_with_time(egui::Id::new(("focus", pane.id)), focused, 0.16)
+        } else if focused {
+            1.0
         } else {
-            Stroke::new(1.0_f32, p.border)
+            0.0
         };
+        let lerp = |a: Color32, b: Color32| a.lerp_to_gamma(b, k);
+        let border = Stroke::new(1.0_f32, lerp(p.border, p.red.gamma_multiply(0.45)));
+        if k > 0.0 {
+            ui.painter().rect_stroke(
+                rect.expand(1.5),
+                r,
+                Stroke::new(1.5_f32, p.red.gamma_multiply(0.14 * k)),
+                StrokeKind::Outside,
+            );
+        }
         ui.painter()
             .rect_stroke(rect.shrink(0.5), r, border, StrokeKind::Inside);
 
@@ -274,6 +290,18 @@ impl egui_tiles::Behavior<Pane> for PaneBehavior<'_> {
                 .layout(Layout::left_to_right(Align::Center)),
         );
         footer(&mut fui, pane, &mut self.cmds);
+
+        // Aparición: el panel nuevo y la pestaña recién elegida entran con un fundido.
+        if anim {
+            let born = (pane.born.elapsed().as_secs_f32() / 0.22).min(1.0);
+            let t = born.min(self.switch);
+            if t < 1.0 {
+                let ease = 1.0 - (1.0 - t).powi(3);
+                ui.painter()
+                    .rect_filled(rect, r, p.bg.gamma_multiply(1.0 - ease));
+                ui.ctx().request_repaint();
+            }
+        }
         UiResponse::None
     }
 

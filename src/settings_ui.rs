@@ -393,6 +393,12 @@ fn terminal(ui: &mut egui::Ui, s: &mut Settings, profiles: &[Profile]) {
     });
     hint(ui, "Se aplica a los paneles que abras desde ahora.");
 
+    heading(ui, "Animaciones");
+    ui.checkbox(
+        &mut s.animations,
+        "Animaciones suaves (cursor, pestañas, paneles y paleta)",
+    );
+
     heading(ui, "Al abrir y cerrar");
     ui.checkbox(
         &mut s.restore_session,
