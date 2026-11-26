@@ -1128,7 +1128,7 @@ impl App {
             Cmd::CopySelection(id) => {
                 let mut copied = false;
                 if let Some(p) = self.pane_mut(id) {
-                    let text = match p.vsel.as_ref().filter(|v| v.moved) {
+                    let text = match p.vsel.take().filter(|v| v.has_selection()) {
                         Some(v) => v.text(),
                         None => p.backend.selectable_content(),
                     };
@@ -1589,11 +1589,11 @@ impl App {
                 {
                     cmds.push(Cmd::Raw(fid, "\n".into()));
                 }
-                // Con una selección que siguió al scroll, Ctrl+C y Ctrl+Shift+C la copian.
+                // Con una selección propia (Claude Code), Ctrl+C la copia en vez de interrumpir.
                 let vsel_ready = ws
                     .focused_pane()
                     .and_then(|p| p.vsel.as_ref())
-                    .is_some_and(|v| v.moved && !v.dragging);
+                    .is_some_and(|v| v.has_selection() && !v.dragging);
                 if vsel_ready
                     && ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)))
                 {
@@ -2581,6 +2581,7 @@ impl eframe::App for App {
                 self.intro = None;
             }
         }
+        egui_term::VIRTUAL_SELECT.store(true, std::sync::atomic::Ordering::Relaxed);
         egui_term::MOUSE_SELECT.store(
             self.settings.mouse_select,
             std::sync::atomic::Ordering::Relaxed,

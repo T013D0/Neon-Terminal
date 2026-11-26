@@ -44,6 +44,8 @@ pub struct TerminalView<'a> {
     font: TerminalFont,
     theme: TerminalTheme,
     bindings_layout: BindingsLayout,
+    /// Patched (neon): celdas a pintar como seleccionadas: (fila en pantalla, col0, col1).
+    highlight: Vec<(i32, usize, usize)>,
 }
 
 impl Widget for TerminalView<'_> {
@@ -83,6 +85,7 @@ impl<'a> TerminalView<'a> {
             font: TerminalFont::default(),
             theme: TerminalTheme::default(),
             bindings_layout: BindingsLayout::new(),
+            highlight: Vec::new(),
         }
     }
 
@@ -99,6 +102,12 @@ impl<'a> TerminalView<'a> {
     }
 
     #[inline]
+    /// Patched (neon): pinta estas celdas con los colores de la selección normal.
+    pub fn set_highlight(mut self, rows: Vec<(i32, usize, usize)>) -> Self {
+        self.highlight = rows;
+        self
+    }
+
     pub fn set_focus(mut self, has_focus: bool) -> Self {
         self.has_focus = has_focus;
         self
@@ -275,9 +284,15 @@ impl<'a> TerminalView<'a> {
             let is_inverse = flags.contains(cell::Flags::INVERSE);
             let is_dim =
                 flags.intersects(cell::Flags::DIM | cell::Flags::DIM_BOLD);
+            let screen_line =
+                indexed.point.line.0 + content.grid.display_offset() as i32;
+            let col = indexed.point.column.0;
             let is_selected = content
                 .selectable_range
-                .is_some_and(|r| r.contains(indexed.point));
+                .is_some_and(|r| r.contains(indexed.point))
+                || self.highlight.iter().any(|&(l, a, b)| {
+                    l == screen_line && col >= a && col < b
+                });
             let is_hovered_hyperling =
                 content.hovered_hyperlink.as_ref().is_some_and(|r| {
                     r.contains(&indexed.point)
@@ -565,7 +580,14 @@ fn process_left_button(
     // soltar también es local aunque ya no se mantenga Shift.
     let select = crate::MOUSE_SELECT.load(std::sync::atomic::Ordering::Relaxed);
     let local = (modifiers.shift != select) || (state.is_dragged && !pressed);
-    if terminal_mode.intersects(TermMode::MOUSE_MODE) && !local {
+    let virtual_sel = crate::VIRTUAL_SELECT.load(std::sync::atomic::Ordering::Relaxed)
+        && terminal_mode.contains(TermMode::ALT_SCREEN)
+        && terminal_mode.intersects(TermMode::MOUSE_MODE);
+    if virtual_sel && local {
+        // La selección la lleva la aplicación (ver VIRTUAL_SELECT).
+        state.is_dragged = false;
+        InputAction::Ignore
+    } else if terminal_mode.intersects(TermMode::MOUSE_MODE) && !local {
         InputAction::BackendCall(BackendCommand::MouseReport(
             MouseButton::LeftButton,
             *modifiers,

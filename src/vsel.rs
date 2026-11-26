@@ -60,8 +60,11 @@ impl VSel {
         let recent = self
             .wheel_at
             .is_some_and(|t| t.elapsed() < Duration::from_millis(500));
-        if recent && self.last.len() == screen.len() && self.last != screen {
-            if let Some(k) = detect_shift(&self.last, &screen) {
+        // Tras la rueda basta poca evidencia; si no, la app se desplazó sola
+        // (por ejemplo, Claude Code escribiendo) y se pide más coincidencia.
+        let min = if recent { 2 } else { 4 };
+        if self.last.len() == screen.len() && self.last != screen {
+            if let Some(k) = detect_shift(&self.last, &screen, min) {
                 self.offset += k;
                 self.moved = true;
             }
@@ -95,6 +98,52 @@ impl VSel {
         (b > a).then_some((a, b))
     }
 
+    /// ¿Hay algo seleccionado (no fue un clic suelto)?
+    pub fn has_selection(&self) -> bool {
+        self.anchor != self.head
+    }
+
+    /// Doble clic: la palabra bajo el mouse. Triple: la línea entera.
+    pub fn select_word(&mut self, line: bool) {
+        let (v, c) = self.anchor;
+        let Some(row) = self.rows.get(&v) else { return };
+        if row.is_empty() {
+            return;
+        }
+        let c = c.min(row.len() - 1);
+        let (a, b) = if line {
+            let end = row.iter().rposition(|ch| !ch.is_whitespace()).unwrap_or(0);
+            (0, end)
+        } else {
+            let word = |ch: &char| !ch.is_whitespace() && !"()[]{}<>'\"`│|,;".contains(*ch);
+            if !word(&row[c]) {
+                return;
+            }
+            let mut a = c;
+            while a > 0 && word(&row[a - 1]) {
+                a -= 1;
+            }
+            let mut b = c;
+            while b + 1 < row.len() && word(&row[b + 1]) {
+                b += 1;
+            }
+            (a, b)
+        };
+        self.anchor = (v, a);
+        self.head = (v, b);
+        self.dragging = false;
+    }
+
+    /// Celdas a pintar: (fila en pantalla, col0, col1).
+    pub fn highlight(&self, rows: usize, cols: usize) -> Vec<(i32, usize, usize)> {
+        if !self.has_selection() {
+            return vec![];
+        }
+        (0..rows)
+            .filter_map(|r| self.cols_on_row(r, cols).map(|(a, b)| (r as i32, a, b)))
+            .collect()
+    }
+
     pub fn text(&self) -> String {
         let ((r0, c0), (r1, c1)) = self.ordered();
         let mut out = vec![];
@@ -121,7 +170,7 @@ fn blank(r: &Row) -> bool {
 }
 
 /// ¿Cuántas líneas subió el contenido? (k > 0: se ve contenido posterior)
-fn detect_shift(old: &[Row], new: &[Row]) -> Option<i64> {
+fn detect_shift(old: &[Row], new: &[Row], min: usize) -> Option<i64> {
     let n = new.len() as i64;
     let score = |k: i64| -> usize {
         (0..n)
@@ -143,7 +192,7 @@ fn detect_shift(old: &[Row], new: &[Row]) -> Option<i64> {
             best_k = k;
         }
     }
-    (best >= 2 && best > base).then_some(best_k)
+    (best >= min && best > base).then_some(best_k)
 }
 
 #[cfg(test)]
@@ -183,5 +232,14 @@ mod tests {
         let mut v = VSel::new(a, 0, 0);
         v.update(screen(&["b2", "c3", "d4"]), Some((2, 1)));
         assert!(!v.moved);
+    }
+
+    #[test]
+    fn double_click_word_and_line() {
+        let mut v = VSel::new(screen(&["  hola mundo(x)  "]), 0, 8);
+        v.select_word(false);
+        assert_eq!(v.text(), "mundo");
+        v.select_word(true);
+        assert_eq!(v.text(), "  hola mundo(x)");
     }
 }

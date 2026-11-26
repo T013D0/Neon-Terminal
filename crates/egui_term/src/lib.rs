@@ -10,6 +10,12 @@ mod view;
 pub static MOUSE_SELECT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(true);
 
+/// Patched (neon): en apps de pantalla alterna con mouse (Claude Code) la
+/// selección la maneja la aplicación (no la de alacritty, que se borra al
+/// redibujar). La vista solo pinta las celdas que se le pasan con `set_highlight`.
+pub static VIRTUAL_SELECT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Patched (neon): animaciones (cursor suave). Lo fija la aplicación.
 pub static ANIMATIONS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(true);

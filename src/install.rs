@@ -380,7 +380,58 @@ pub fn start_dir(arg: Option<&str>) -> Option<String> {
         || windir.is_some_and(|w| cwd.starts_with(w))
         || dirs::home_dir().is_some_and(|h| cwd == h)
         || cwd == std::path::Path::new("/");
-    (!boring).then(|| clean(cwd))
+    if !boring {
+        return Some(clean(cwd));
+    }
+    // El Explorador no siempre entrega su carpeta como directorio de trabajo
+    // (con "App Paths" a veces llega la carpeta del exe). Si lo que estaba al
+    // frente al abrir Neon era una ventana del Explorador, se usa su carpeta.
+    explorer_folder()
+}
+
+/// Carpeta de la ventana del Explorador que está al frente (la pestaña activa).
+#[cfg(windows)]
+fn explorer_folder() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetForegroundWindow() -> isize;
+        fn GetClassNameW(hwnd: isize, buf: *mut u16, len: i32) -> i32;
+        fn GetWindowTextW(hwnd: isize, buf: *mut u16, len: i32) -> i32;
+    }
+    let (hwnd, class, title) = unsafe {
+        let hwnd = GetForegroundWindow();
+        let mut buf = [0u16; 512];
+        let n = GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+        let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+        let n = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+        (hwnd, class, String::from_utf16_lossy(&buf[..n.max(0) as usize]))
+    };
+    if hwnd == 0 || class != "CabinetWClass" {
+        return None;
+    }
+    // Con pestañas, todas comparten la ventana: la activa es la que da el título.
+    let title = title.replace('\'', "''");
+    let script = format!(
+        "$w = @((New-Object -ComObject Shell.Application).Windows() | \
+         Where-Object {{ $_.HWND -eq {hwnd} }}); \
+         $a = @($w | Where-Object {{ $_.LocationName -eq '{title}' }}); \
+         if ($a.Count -gt 0) {{ $w = $a }}; \
+         if ($w.Count -gt 0) {{ $w[0].Document.Folder.Self.Path }}"
+    );
+    let out = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script.as_str()])
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .output()
+        .ok()?;
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let p = std::path::PathBuf::from(&path);
+    (p.is_absolute() && p.is_dir()).then_some(path)
+}
+
+#[cfg(not(windows))]
+fn explorer_folder() -> Option<String> {
+    None
 }
 
 /// En Windows `canonicalize` devuelve rutas `\\?\C:\...`; las dejamos normales.

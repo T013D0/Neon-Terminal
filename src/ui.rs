@@ -203,6 +203,18 @@ impl PaneBehavior<'_> {
         } else if pressed {
             pane.vsel = None;
         }
+        // Escribir en la app quita la selección (como en cualquier terminal).
+        let typed = ui.input(|i| {
+            i.events.iter().any(|e| {
+                matches!(e, egui::Event::Text(_))
+                    || matches!(e, egui::Event::Key { pressed: true, modifiers, key, .. }
+                        if !modifiers.ctrl && !modifiers.command
+                            && !matches!(key, egui::Key::Escape))
+            })
+        });
+        if typed && pane.id == self.focused && pane.vsel.as_ref().is_some_and(|v| !v.dragging) {
+            pane.vsel = None;
+        }
         let Some(v) = pane.vsel.as_mut() else { return };
         if wheel {
             v.note_wheel();
@@ -219,9 +231,18 @@ impl PaneBehavior<'_> {
             }
         }
         v.update(rows, pos.map(cell_at));
-        if released && v.dragging {
+        // Doble clic = palabra, triple = línea.
+        if resp.triple_clicked() {
+            v.select_word(true);
+        } else if resp.double_clicked() {
+            v.select_word(false);
+        }
+        let finished = (released && v.dragging) || resp.double_clicked() || resp.triple_clicked();
+        if released {
             v.dragging = false;
-            if v.moved {
+        }
+        if finished {
+            if v.has_selection() {
                 let text = v.text();
                 if self.copy_on_select && !text.trim().is_empty() {
                     ui.ctx().copy_text(text);
@@ -243,21 +264,7 @@ impl PaneBehavior<'_> {
                 pane.scroll_by(auto);
             }
         }
-        if let Some(v) = pane.vsel.as_ref().filter(|v| v.moved || v.dragging) {
-            let p = pal();
-            for r in 0..n {
-                if let Some((a, b)) = v.cols_on_row(r, cols) {
-                    let rect = Rect::from_min_size(
-                        pos2(
-                            term_rect.min.x + a as f32 * cw,
-                            term_rect.min.y + r as f32 * ch,
-                        ),
-                        vec2((b - a) as f32 * cw, ch),
-                    );
-                    ui.painter()
-                        .rect_filled(rect, 0.0, p.red.gamma_multiply(0.30));
-                }
-            }
+        if pane.vsel.as_ref().is_some_and(|v| v.dragging) {
             ui.ctx().request_repaint();
         }
     }
@@ -283,7 +290,17 @@ impl egui_tiles::Behavior<Pane> for PaneBehavior<'_> {
         self.rects.push((pane.id, rect));
         // Con la búsqueda abierta, el teclado va al cuadro de búsqueda.
         let typing_here = focused && self.input_enabled && !pane.search.open;
+        // La selección propia (Claude Code en pantalla completa) se pinta con
+        // los mismos colores que la selección normal de la terminal.
+        let highlight = match pane.vsel.as_ref() {
+            Some(v) => {
+                let rows = pane.screen_rows();
+                v.highlight(rows.len(), rows.first().map_or(0, |r| r.len()))
+            }
+            None => vec![],
+        };
         let view = TerminalView::new(ui, &mut pane.backend)
+            .set_highlight(highlight)
             .set_focus(typing_here)
             .set_size(term_rect.size())
             .set_theme(self.theme.clone())

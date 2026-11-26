@@ -360,6 +360,15 @@ impl Pane {
             .last_content()
             .terminal_mode
             .contains(egui_term::TerminalMode::BRACKETED_PASTE);
+        // PowerShell en el prompt: varias líneas enviadas como teclas llegan a
+        // PSReadLine por ConPTY como Ctrl+Enter ("insertar línea arriba") y
+        // quedan al revés. Su propio Ctrl+V lee el portapapeles y las pega bien.
+        let multiline = text.contains(['\n', '\r']);
+        if multiline && !bracketed && self.at_prompt && self.profile == ProfileKind::PowerShell {
+            self.insert("\x16");
+            self.typed_exact = false;
+            return;
+        }
         let text = text.replace("\r\n", "\r").replace('\n', "\r");
         if bracketed {
             self.insert(&format!("\x1b[200~{text}\x1b[201~"));
