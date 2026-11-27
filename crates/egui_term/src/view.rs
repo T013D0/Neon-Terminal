@@ -7,7 +7,7 @@ use egui::Modifiers;
 use egui::MouseWheelUnit;
 use egui::Shape;
 use egui::Widget;
-use egui::{Align2, Painter, Pos2, Rect, Response, Stroke, Vec2};
+use egui::{Painter, Pos2, Rect, Response, Stroke, Vec2};
 use egui::{CornerRadius, Key};
 use egui::{Id, PointerButton};
 
@@ -251,7 +251,19 @@ impl<'a> TerminalView<'a> {
         layout: &Response,
         painter: &Painter,
     ) {
-        let content = self.backend.sync();
+        self.backend.sync();
+        let backend = &*self.backend;
+        backend.with_grid(|grid| self.render(state, layout, painter, grid));
+    }
+
+    fn render(
+        &self,
+        state: &TerminalViewState,
+        layout: &Response,
+        painter: &Painter,
+        grid: &alacritty_terminal::Grid<cell::Cell>,
+    ) {
+        let content = self.backend.last_content();
         let layout_min = layout.rect.min;
         let layout_max = layout.rect.max;
         let cell_height = content.terminal_size.cell_height as f32;
@@ -270,7 +282,10 @@ impl<'a> TerminalView<'a> {
             )));
         }
 
-        for indexed in content.grid.display_iter() {
+        let fonts = painter.fonts(|f| f.clone());
+        let font_id = self.font.font_type();
+        let ppp = painter.ctx().pixels_per_point();
+        for indexed in grid.display_iter() {
             let flags = indexed.cell.flags;
             let is_wide_char_spacer =
                 flags.contains(cell::Flags::WIDE_CHAR_SPACER);
@@ -285,7 +300,7 @@ impl<'a> TerminalView<'a> {
             let is_dim =
                 flags.intersects(cell::Flags::DIM | cell::Flags::DIM_BOLD);
             let screen_line =
-                indexed.point.line.0 + content.grid.display_offset() as i32;
+                indexed.point.line.0 + content.display_offset as i32;
             let col = indexed.point.column.0;
             let is_selected = content
                 .selectable_range
@@ -301,7 +316,7 @@ impl<'a> TerminalView<'a> {
 
             let x = layout_min.x + (cell_width * indexed.point.column.0 as f32);
             let line_num =
-                indexed.point.line.0 + content.grid.display_offset() as i32;
+                indexed.point.line.0 + content.display_offset as i32;
             let y = layout_min.y + (cell_height * line_num as f32);
 
             let mut fg = self.theme.get_color(indexed.fg);
@@ -345,7 +360,7 @@ impl<'a> TerminalView<'a> {
             }
 
             // Handle cursor rendering
-            if content.grid.cursor.point == indexed.point {
+            if content.cursor_point == indexed.point {
                 let cursor_color = self.theme.get_color(content.cursor.fg);
                 // Patched (neon): el cursor se desliza en vez de saltar.
                 let (cx, cy) = if crate::ANIMATIONS
@@ -379,21 +394,18 @@ impl<'a> TerminalView<'a> {
 
             // Draw text content
             if indexed.c != ' ' && indexed.c != '\t' {
-                if content.grid.cursor.point == indexed.point
+                if content.cursor_point == indexed.point
                     && is_app_cursor_mode
                 {
                     std::mem::swap(&mut fg, &mut bg);
                 }
 
-                shapes.push(Shape::text(
-                    &painter.fonts(|c| c.clone()),
-                    Pos2 {
-                        x: x + (cell_width / 2.0),
-                        y,
-                    },
-                    Align2::CENTER_TOP,
-                    indexed.c,
-                    self.font.font_type(),
+                // Patched (neon): un galley por carácter, cacheado entre frames
+                // (antes se maquetaba cada celda en cada frame).
+                let galley = glyph(&fonts, &font_id, ppp, indexed.c);
+                shapes.push(Shape::galley(
+                    Pos2::new(x + (cell_width - galley.size().x) / 2.0, y),
+                    galley,
                     fg,
                 ));
             }
@@ -401,6 +413,39 @@ impl<'a> TerminalView<'a> {
 
         painter.extend(shapes);
     }
+}
+
+thread_local! {
+    /// Patched (neon): galleys de caracteres ya maquetados (por fuente y escala).
+    static GLYPHS: std::cell::RefCell<(
+        Option<(egui::FontId, f32)>,
+        std::collections::HashMap<char, std::sync::Arc<egui::Galley>>,
+    )> = Default::default();
+}
+
+fn glyph(
+    fonts: &egui::epaint::Fonts,
+    font: &egui::FontId,
+    ppp: f32,
+    c: char,
+) -> std::sync::Arc<egui::Galley> {
+    GLYPHS.with(|g| {
+        let mut g = g.borrow_mut();
+        let key = Some((font.clone(), ppp));
+        if g.0 != key || g.1.len() > 8192 {
+            g.0 = key;
+            g.1.clear();
+        }
+        g.1.entry(c)
+            .or_insert_with(|| {
+                fonts.layout_no_wrap(
+                    c.to_string(),
+                    font.clone(),
+                    egui::Color32::PLACEHOLDER,
+                )
+            })
+            .clone()
+    })
 }
 
 fn process_keyboard_event(
@@ -583,7 +628,20 @@ fn process_left_button(
     let virtual_sel = crate::VIRTUAL_SELECT.load(std::sync::atomic::Ordering::Relaxed)
         && terminal_mode.contains(TermMode::ALT_SCREEN)
         && terminal_mode.intersects(TermMode::MOUSE_MODE);
-    if virtual_sel && local {
+    let on_link = modifiers.command_only()
+        && backend.last_content().hovered_hyperlink.is_some();
+    if on_link {
+        // Ctrl+clic sobre un link: se abre al soltar, aunque la app pida el mouse.
+        state.is_dragged = false;
+        if pressed {
+            InputAction::Ignore
+        } else {
+            InputAction::BackendCall(BackendCommand::ProcessLink(
+                LinkAction::Open,
+                state.current_mouse_position_on_grid,
+            ))
+        }
+    } else if virtual_sel && local {
         // La selección la lleva la aplicación (ver VIRTUAL_SELECT).
         state.is_dragged = false;
         InputAction::Ignore
@@ -680,7 +738,7 @@ fn process_mouse_move(
         cursor_x,
         cursor_y,
         &terminal_content.terminal_size,
-        terminal_content.grid.display_offset(),
+        terminal_content.display_offset,
     );
 
     let mut actions = vec![];
@@ -700,6 +758,12 @@ fn process_mouse_move(
     if modifiers.command_only() {
         actions.push(InputAction::BackendCall(BackendCommand::ProcessLink(
             LinkAction::Hover,
+            state.current_mouse_position_on_grid,
+        )));
+    } else if terminal_content.hovered_hyperlink.is_some() {
+        // Patched (neon): sin Ctrl el link deja de estar marcado.
+        actions.push(InputAction::BackendCall(BackendCommand::ProcessLink(
+            LinkAction::Clear,
             state.current_mouse_position_on_grid,
         )));
     }

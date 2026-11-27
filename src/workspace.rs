@@ -18,6 +18,9 @@ pub struct Workspace {
     /// Nombre puesto a mano (si no, se usa carpeta · rama).
     pub name: Option<String>,
     pub color: Option<u8>,
+    /// Nombre y color que vienen del `.neon.toml` del proyecto (si no hay manuales).
+    pub auto_name: Option<String>,
+    pub auto_color: Option<u8>,
     /// Panel maximizado dentro de la pestaña (Ctrl+Shift+Enter).
     pub zoomed: Option<u64>,
 }
@@ -67,6 +70,8 @@ impl Workspace {
             focused,
             name: None,
             color: None,
+            auto_name: None,
+            auto_color: None,
             zoomed: None,
         }
     }
@@ -119,7 +124,7 @@ impl Workspace {
 
     /// Título de la pestaña: nombre manual o carpeta · rama del panel activo.
     pub fn title(&self) -> String {
-        if let Some(n) = &self.name {
+        if let Some(n) = self.name.as_ref().or(self.auto_name.as_ref()) {
             return n.clone();
         }
         self.focused_pane()

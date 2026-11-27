@@ -22,6 +22,16 @@ pub fn set_style(dark: bool, backdrop: u32) {
 
 /// Aplica el estilo a todas las ventanas de Neon (las nuevas aparecen al
 /// sacar una pestaña o con Ctrl+Shift+N).
+/// Modo Quake: si Neon está al frente lo minimiza; si no, lo trae al frente.
+/// Se llama desde el hilo del atajo global (no depende de que se redibuje).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn toggle_main_window() {
+    #[cfg(windows)]
+    unsafe {
+        win::toggle_main()
+    };
+}
+
 pub fn style_all_windows() {
     #[cfg(windows)]
     unsafe {
@@ -97,6 +107,12 @@ mod win {
             lparam: isize,
         ) -> i32;
         fn IsWindowVisible(hwnd: isize) -> i32;
+        fn GetWindowRect(hwnd: isize, rect: *mut WinRect) -> i32;
+        fn GetForegroundWindow() -> isize;
+        fn SetForegroundWindow(hwnd: isize) -> i32;
+        fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+        fn IsIconic(hwnd: isize) -> i32;
+        fn IsWindow(hwnd: isize) -> i32;
         fn GetCursorPos(p: *mut Point) -> i32;
         fn GetAsyncKeyState(vk: i32) -> i16;
         fn GetWindowLongPtrW(hwnd: isize, index: i32) -> isize;
@@ -177,13 +193,68 @@ mod win {
         }
     }
 
+    #[repr(C)]
+    struct WinRect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    /// Solo las ventanas de verdad. El hilo también tiene ventanitas
+    /// auxiliares (de winit, del portapapeles, del IME) de tamaño casi cero:
+    /// si se les pone borde y esquinas redondeadas, aparecen como un punto
+    /// en la esquina de la pantalla.
+    unsafe fn is_real_window(hwnd: isize) -> bool {
+        const GWL_EXSTYLE: i32 = -20;
+        const WS_EX_TOOLWINDOW: isize = 0x0000_0080;
+        unsafe {
+            if IsWindowVisible(hwnd) == 0 {
+                return false;
+            }
+            if GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW != 0 {
+                return false;
+            }
+            let mut r = WinRect { left: 0, top: 0, right: 0, bottom: 0 };
+            GetWindowRect(hwnd, &mut r) != 0
+                && r.right - r.left >= 200
+                && r.bottom - r.top >= 120
+        }
+    }
+
+    /// La primera ventana de verdad (la principal), para el atajo global.
+    static MAIN: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
     unsafe extern "system" fn each(hwnd: isize, _: isize) -> i32 {
         unsafe {
-            if IsWindowVisible(hwnd) != 0 {
+            if is_real_window(hwnd) {
+                let main = MAIN.load(std::sync::atomic::Ordering::Relaxed);
+                if main == 0 || IsWindow(main) == 0 {
+                    MAIN.store(hwnd, std::sync::atomic::Ordering::Relaxed);
+                }
                 style(hwnd);
             }
         }
         1
+    }
+
+    pub unsafe fn toggle_main() {
+        const SW_MINIMIZE: i32 = 6;
+        const SW_RESTORE: i32 = 9;
+        let h = MAIN.load(std::sync::atomic::Ordering::Relaxed);
+        unsafe {
+            if h == 0 || IsWindow(h) == 0 {
+                return;
+            }
+            if GetForegroundWindow() == h && IsIconic(h) == 0 {
+                ShowWindow(h, SW_MINIMIZE);
+            } else {
+                if IsIconic(h) != 0 {
+                    ShowWindow(h, SW_RESTORE);
+                }
+                SetForegroundWindow(h);
+            }
+        }
     }
 
     /// Todas las ventanas de Neon viven en el hilo principal.
@@ -202,5 +273,32 @@ mod win {
 
     pub fn left_down() -> bool {
         (unsafe { GetAsyncKeyState(VK_LBUTTON) } as u16 & 0x8000) != 0
+    }
+}
+
+/// Devuelve al sistema la memoria que quedó libre (por ejemplo, el historial
+/// de un panel que se cerró). Sin esto el asignador la guarda para reusarla y
+/// el uso de RAM no baja aunque se cierren pestañas.
+pub fn release_memory() {
+    #[cfg(windows)]
+    unsafe {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetProcessHeap() -> isize;
+            fn HeapCompact(heap: isize, flags: u32) -> usize;
+            fn GetCurrentProcess() -> isize;
+            fn SetProcessWorkingSetSize(process: isize, min: usize, max: usize) -> i32;
+        }
+        HeapCompact(GetProcessHeap(), 0);
+        // Saca del working set las páginas que ya no se usan (no las libera
+        // si se vuelven a necesitar: solo deja de contarlas como usadas).
+        SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        malloc_trim(0);
     }
 }

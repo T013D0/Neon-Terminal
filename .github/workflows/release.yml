@@ -32,13 +32,42 @@ jobs:
       - name: Compilar Neon
         run: cargo build --release -p neon
 
+      # Firma de código (evita el aviso de SmartScreen). Sin los secretos
+      # WINDOWS_CERT_PFX y WINDOWS_CERT_PASSWORD este paso no hace nada.
+      - name: Firmar neon.exe
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: ./scripts/sign.ps1 target/release/neon.exe
+
+      # ConPTY de Windows Terminal: va dentro del instalador, junto a neon.exe.
+      - name: Descargar ConPTY moderno
+        shell: pwsh
+        run: ./scripts/get-conpty.ps1 -Dest target/release
+
       - name: Compilar el instalador
         run: cargo build --release -p neon-setup
+
+      - name: Firmar el instalador
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: ./scripts/sign.ps1 target/release/NeonSetup.exe
 
       - name: Publicar el release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" target/release/NeonSetup.exe \
-            --title "Neon $GITHUB_REF_NAME" --generate-notes
+          # Notas: la sección de esta versión en CHANGELOG.md (si existe).
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '/^## /{p = (index($0, "## " v " ") == 1 || $0 == "## " v); next} p' CHANGELOG.md > notas.md || true
+          if [ -s notas.md ]; then
+            gh release create "$GITHUB_REF_NAME" target/release/NeonSetup.exe \
+              --title "Neon $GITHUB_REF_NAME" --notes-file notas.md
+          else
+            gh release create "$GITHUB_REF_NAME" target/release/NeonSetup.exe \
+              --title "Neon $GITHUB_REF_NAME" --generate-notes
+          fi

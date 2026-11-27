@@ -58,6 +58,23 @@ pub struct Settings {
     pub mouse_select: bool,
     /// Clic central pega el portapapeles.
     pub middle_paste: bool,
+    /// Bloques de comandos: barra de estado, copiar comando/salida, encabezado fijo.
+    pub blocks: bool,
+    /// Lista de carpetas al escribir `cd `.
+    pub cd_suggest: bool,
+    /// Completar en gris con el historial mientras escribes (→ acepta).
+    pub autosuggest: bool,
+    /// Atajo global para mostrar/ocultar Neon desde cualquier app (modo Quake).
+    pub quake: bool,
+    pub quake_key: String,
+    /// Claude en la terminal (# pedido → comando, explicar errores).
+    pub ai: bool,
+    /// Modelo para esas respuestas (rápido por defecto).
+    pub ai_model: String,
+    /// Confirmar antes de pegar algo riesgoso.
+    pub safe_paste: bool,
+    /// Versión del recorrido de bienvenida que ya se vio.
+    pub tour_seen: u32,
     /// Shift+Enter = salto de línea cuando corre Claude Code.
     pub shift_enter_newline: bool,
     /// Ctrl+V inteligente: texto, archivos copiados e imágenes.
@@ -88,6 +105,15 @@ impl Default for Settings {
             startup_anim: true,
             mouse_select: true,
             middle_paste: true,
+            blocks: true,
+            cd_suggest: true,
+            autosuggest: true,
+            quake: true,
+            quake_key: "Ctrl+Alt+T".into(),
+            ai: true,
+            ai_model: "haiku".into(),
+            safe_paste: true,
+            tour_seen: 0,
             shift_enter_newline: true,
             smart_paste: true,
             notify_bell: true,

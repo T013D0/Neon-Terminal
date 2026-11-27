@@ -28,6 +28,27 @@ pub enum Badge {
     Activity,
     Attention,
     Working,
+    /// Claude Code o un comando terminó mientras mirabas otra pestaña.
+    Done,
+    /// Hay un comando corriendo (que no es Claude Code).
+    Running,
+    /// Un comando falló mientras mirabas otra pestaña.
+    Failed,
+}
+
+impl Badge {
+    /// Texto para el tooltip de la pestaña.
+    pub fn hint(self) -> Option<&'static str> {
+        match self {
+            Badge::Attention => Some("Te necesita (Claude Code espera tu respuesta o hubo un aviso)"),
+            Badge::Working => Some("Claude Code está trabajando…"),
+            Badge::Done => Some("Terminó (un comando o Claude Code)"),
+            Badge::Running => Some("Hay un comando corriendo"),
+            Badge::Failed => Some("Un comando falló"),
+            Badge::Activity => Some("Hay salida nueva"),
+            Badge::None => None,
+        }
+    }
 }
 
 pub fn tab(
@@ -81,15 +102,61 @@ pub fn tab(
             p.circle_filled(center, 3.5, pal().text);
         }
         Badge::Attention => {
-            p.circle_filled(center, 5.5, pal().red.gamma_multiply(0.35));
+            // Halo que late: pide atención.
+            let t = ui.input(|i| i.time) as f32;
+            let k = 0.5 + 0.5 * (t * 3.0).sin();
+            p.circle_filled(center, 4.5 + 2.5 * k, pal().red.gamma_multiply(0.18 + 0.2 * k));
             p.circle_filled(center, 3.5, pal().red);
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
         }
         Badge::Working => {
+            // Arco que gira: está pensando.
             let t = ui.input(|i| i.time) as f32;
-            let k = 0.55 + 0.45 * (t * 4.0).sin();
-            p.circle_filled(center, 3.5, pal().red.gamma_multiply(k));
+            let c = pal().orange;
+            p.circle_stroke(center, 4.5, Stroke::new(1.5_f32, c.gamma_multiply(0.25)));
+            let a0 = t * 6.0;
+            let pts: Vec<egui::Pos2> = (0..=10)
+                .map(|k| {
+                    let a = a0 + k as f32 * 0.17;
+                    center + vec2(a.cos(), a.sin()) * 4.5
+                })
+                .collect();
+            p.add(egui::Shape::line(pts, Stroke::new(1.8_f32, c)));
             ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(80));
+                .request_repaint_after(std::time::Duration::from_millis(33));
+        }
+        Badge::Running => {
+            // Arco tenue que gira: algo corre, sin apuro.
+            let t = ui.input(|i| i.time) as f32;
+            let c = pal().muted;
+            p.circle_stroke(center, 4.5, Stroke::new(1.5_f32, c.gamma_multiply(0.3)));
+            let a0 = t * 4.0;
+            let pts: Vec<egui::Pos2> = (0..=10)
+                .map(|k| {
+                    let a = a0 + k as f32 * 0.17;
+                    center + vec2(a.cos(), a.sin()) * 4.5
+                })
+                .collect();
+            p.add(egui::Shape::line(pts, Stroke::new(1.6_f32, c)));
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        Badge::Failed => {
+            p.circle_filled(center, 4.0, pal().red);
+            p.line_segment([center + vec2(-1.6, -1.6), center + vec2(1.6, 1.6)], Stroke::new(1.3_f32, pal().bg));
+            p.line_segment([center + vec2(-1.6, 1.6), center + vec2(1.6, -1.6)], Stroke::new(1.3_f32, pal().bg));
+        }
+        Badge::Done => {
+            p.circle_filled(center, 4.0, pal().green);
+            p.line_segment(
+                [center + vec2(-2.0, 0.2), center + vec2(-0.6, 1.6)],
+                Stroke::new(1.3_f32, pal().bg),
+            );
+            p.line_segment(
+                [center + vec2(-0.6, 1.6), center + vec2(2.2, -1.4)],
+                Stroke::new(1.3_f32, pal().bg),
+            );
         }
     }
     if let (Some(c), true) = (color, active) {
@@ -133,6 +200,9 @@ pub fn tab_ghost(p: &egui::Painter, at: egui::Pos2, title: &str, color: Color32)
 
 // ─────────────────────────── Paneles ───────────────────────────
 
+/// Lo que dura la animación al cerrar un panel.
+pub const CLOSE_ANIM: std::time::Duration = std::time::Duration::from_millis(150);
+
 pub struct PaneBehavior<'a> {
     pub focused: u64,
     pub input_enabled: bool,
@@ -145,12 +215,453 @@ pub struct PaneBehavior<'a> {
     pub opacity: f32,
     pub copy_on_select: bool,
     pub middle_paste: bool,
+    pub blocks: bool,
     /// Progreso (0..1) del cambio de pestaña; 1 = sin animación.
     pub switch: f32,
 }
 
 impl PaneBehavior<'_> {
     /// Selección que sobrevive al scroll de apps en pantalla alterna con mouse.
+    /// Bloques de comandos: barra de estado a la izquierda, botones al pasar
+    /// el mouse y el comando fijo arriba cuando su salida sigue en pantalla.
+    fn blocks_ui(&mut self, ui: &mut egui::Ui, pane: &mut Pane, term_rect: Rect) {
+        let views = pane.visible_blocks();
+        if views.is_empty() {
+            return;
+        }
+        let p = pal();
+        let ch = pane.backend.last_content().terminal_size.cell_height as f32;
+        if ch <= 0.0 {
+            return;
+        }
+        let rows = (term_rect.height() / ch).floor() as i64;
+        let y_of = |row: i64| term_rect.min.y + row.clamp(0, rows) as f32 * ch;
+        let hover_row = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|pos| term_rect.contains(*pos))
+            .map(|pos| ((pos.y - term_rect.min.y) / ch).floor() as i64);
+        let painter = ui.painter_at(term_rect.expand2(vec2(12.0, 0.0)));
+        let status = |b: &crate::pane::Block| -> (Color32, String) {
+            let secs = |d: std::time::Duration| {
+                let s = d.as_secs_f32();
+                if s < 1.0 {
+                    format!("{} ms", d.as_millis())
+                } else if s < 60.0 {
+                    format!("{s:.1} s")
+                } else {
+                    format!("{}m {}s", s as u64 / 60, s as u64 % 60)
+                }
+            };
+            match b.ok {
+                None => (p.yellow, format!("● {}", secs(b.started.elapsed()))),
+                Some(true) => (p.green, format!("✓ {}", b.duration.map(secs).unwrap_or_default())),
+                Some(false) => (p.red, format!("✕ {}", b.duration.map(secs).unwrap_or_default())),
+            }
+        };
+        let mut running = false;
+        let mut sticky = None;
+        for v in &views {
+            let b = &pane.blocks[v.index];
+            let (color, _) = status(b);
+            running |= b.ok.is_none();
+            let (top, bottom) = (y_of(v.top), y_of(v.bottom));
+            // Barra de estado a la izquierda, con un corte entre bloques.
+            if bottom - top > 2.0 {
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        pos2(term_rect.min.x - 9.0, top + 2.0),
+                        pos2(term_rect.min.x - 7.0, bottom - 2.0),
+                    ),
+                    1.0,
+                    color.gamma_multiply(0.75),
+                );
+            }
+            if v.top > 0 {
+                painter.hline(
+                    term_rect.x_range(),
+                    top - 0.5,
+                    Stroke::new(1.0_f32, p.border.gamma_multiply(0.6)),
+                );
+            }
+            if v.cmd_row < 0 && v.bottom > 1 {
+                sticky = Some(v.clone());
+            }
+            // Mientras corre (Claude Code, vim…) los botones estorbarían.
+            let hovered = b.ok.is_some() && hover_row.is_some_and(|r| r >= v.top && r < v.bottom);
+            if hovered {
+                painter.rect_filled(
+                    Rect::from_min_max(pos2(term_rect.min.x - 4.0, top), pos2(term_rect.max.x, bottom)),
+                    4.0,
+                    p.text.gamma_multiply(0.035),
+                );
+                // Botones arriba a la derecha (bajo el encabezado fijo si lo hay).
+                let y = if v.cmd_row < 0 {
+                    term_rect.min.y + ch + 10.0
+                } else {
+                    y_of(v.cmd_row) + 1.0
+                };
+                let mut x = term_rect.max.x - 4.0;
+                let idx = v.index;
+                let failed = b.ok == Some(false);
+                let mut buttons = vec![("Copiar salida", 1), ("Copiar comando", 0)];
+                if failed {
+                    buttons.push(("✳ Explicar el error", 2));
+                }
+                for (label, what) in buttons {
+                    let font = egui::FontId::proportional(11.5);
+                    let w = ui.fonts(|f| f.layout_no_wrap(label.into(), font.clone(), p.text).size().x) + 14.0;
+                    let r = Rect::from_min_size(pos2(x - w, y), vec2(w, 20.0));
+                    x -= w + 4.0;
+                    let resp = ui.interact(r, ui.id().with(("block_btn", pane.id, idx, what)), Sense::click());
+                    let bg = if resp.hovered() { p.hover } else { p.surface };
+                    ui.painter().rect(r, 5.0, bg, Stroke::new(1.0_f32, p.border), egui::StrokeKind::Inside);
+                    ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, label, font, p.text);
+                    if what == 2 {
+                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            self.cmds.push(Cmd::ExplainBlock(pane.id, idx));
+                        }
+                        continue;
+                    }
+                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        let text = if what == 0 {
+                            pane.blocks[idx].command.clone()
+                        } else {
+                            pane.block_output(idx)
+                        };
+                        ui.ctx().copy_text(text);
+                        self.cmds.push(Cmd::Toast("Copiado".into()));
+                    }
+                }
+            }
+        }
+        // Encabezado fijo: el comando cuya salida estás leyendo.
+        if let Some(v) = sticky {
+            let b = pane.blocks[v.index].clone();
+            let (color, st) = status(&b);
+            let r = Rect::from_min_size(term_rect.min - vec2(4.0, 0.0), vec2(term_rect.width() + 4.0, ch + 6.0));
+            let resp = ui.interact(r, ui.id().with(("block_sticky", pane.id)), Sense::click());
+            ui.painter().rect(
+                r,
+                CornerRadius { nw: 0, ne: 0, sw: 6, se: 6 },
+                if resp.hovered() { p.hover } else { p.surface },
+                Stroke::new(1.0_f32, p.border),
+                egui::StrokeKind::Inside,
+            );
+            let mono = egui::FontId::monospace(12.5);
+            ui.painter().text(
+                pos2(r.min.x + 10.0, r.center().y),
+                egui::Align2::LEFT_CENTER,
+                format!("❯ {}", b.command),
+                mono.clone(),
+                p.text,
+            );
+            ui.painter().text(
+                pos2(r.max.x - 10.0, r.center().y),
+                egui::Align2::RIGHT_CENTER,
+                st,
+                egui::FontId::proportional(11.5),
+                color,
+            );
+            if resp
+                .on_hover_text("Ir al comando")
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                pane.scroll_to(b.prompt - 1, false);
+            }
+        }
+        if running {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        }
+    }
+
+    /// Panel de cambios a la derecha del panel: archivos y diff del elegido.
+    fn changes_ui(&mut self, ui: &mut egui::Ui, pane: &mut Pane, term_rect: Rect) {
+        let p = pal();
+        let base = pane.claude_base.clone();
+        let pid = pane.id;
+        let Some(ch) = pane.changes.as_mut() else { return };
+        // Mientras está abierto se actualiza cada 3 s (un `git status`).
+        if ch.loaded.elapsed() > std::time::Duration::from_secs(3) {
+            ch.refresh(base.as_ref());
+        }
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(3));
+        let width = (term_rect.width() * 0.55).clamp(320.0, 760.0).min(term_rect.width());
+        let rect = Rect::from_min_max(pos2(term_rect.max.x - width, term_rect.min.y), term_rect.max);
+        let mut close = false;
+        let mut open_file = None;
+        let mut discard = None;
+        egui::Area::new(egui::Id::new(("changes", pid)))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .show(ui.ctx(), |ui| {
+                popup_frame().inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                    ui.set_width(width - 24.0);
+                    ui.set_height(rect.height() - 26.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Cambios").size(15.0).strong());
+                        let n_claude = ch.files.iter().filter(|f| f.by_claude).count();
+                        let summary = if base.is_some() {
+                            format!("{} archivo(s) · {n_claude} desde que arrancó Claude", ch.files.len())
+                        } else {
+                            format!("{} archivo(s) sin commit", ch.files.len())
+                        };
+                        ui.label(RichText::new(summary).color(p.muted).size(12.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("✕").on_hover_text("Cerrar (Ctrl+Shift+G)").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                    ui.add_space(6.0);
+                    if ch.files.is_empty() {
+                        ui.label(RichText::new("No hay cambios sin commit.").color(p.muted));
+                        return;
+                    }
+                    let list_h = (ch.files.len() as f32 * 24.0).min(rect.height() * 0.35);
+                    let mut pick = None;
+                    egui::ScrollArea::vertical()
+                        .id_salt("files")
+                        .max_height(list_h)
+                        .show(ui, |ui| {
+                            for (i, f) in ch.files.iter().enumerate() {
+                                let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+                                if ch.selected == Some(i) {
+                                    ui.painter().rect_filled(r, CornerRadius::same(5), theme::mix(p.surface, p.red, 0.16));
+                                } else if resp.hovered() {
+                                    ui.painter().rect_filled(r, CornerRadius::same(5), p.hover);
+                                }
+                                let (letter, color) = match f.status.trim() {
+                                    "??" => ("N", p.cyan),
+                                    s if s.contains('D') => ("D", p.red),
+                                    s if s.contains('A') => ("A", p.green),
+                                    s if s.contains('R') => ("R", p.violet),
+                                    _ => ("M", p.orange),
+                                };
+                                ui.painter().text(pos2(r.min.x + 10.0, r.center().y), egui::Align2::CENTER_CENTER, letter, FontId::monospace(12.0), color);
+                                ui.painter().text(pos2(r.min.x + 22.0, r.center().y), egui::Align2::LEFT_CENTER, truncate(&f.path, 70), FontId::monospace(12.0), p.text);
+                                if f.by_claude {
+                                    ui.painter().text(pos2(r.max.x - 8.0, r.center().y), egui::Align2::RIGHT_CENTER, "✳ Claude", FontId::proportional(11.0), p.orange);
+                                }
+                                if resp.clicked() {
+                                    pick = Some(i);
+                                }
+                            }
+                        });
+                    if let Some(i) = pick {
+                        ch.select(i);
+                    }
+                    let Some(f) = ch.selected.and_then(|i| ch.files.get(i)).cloned() else {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("Elige un archivo para ver su diff.").color(p.muted));
+                        return;
+                    };
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(truncate(&f.path, 60)).monospace().strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if f.restorable() {
+                                if ch.confirm_discard.as_deref() == Some(f.path.as_str()) {
+                                    let b = egui::Button::new(RichText::new("¿Seguro? Descartar").color(Color32::WHITE)).fill(p.red);
+                                    if ui.add(b).clicked() {
+                                        discard = Some(f.path.clone());
+                                    }
+                                } else if ui.button("Descartar").on_hover_text("Volver a como estaba en el último commit").clicked() {
+                                    ch.confirm_discard = Some(f.path.clone());
+                                }
+                            }
+                            if ui.button("Abrir").on_hover_text("Abrir en el editor").clicked() {
+                                open_file = Some(ch.full_path(&f.path).display().to_string());
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+                    egui::ScrollArea::both().id_salt("diff").auto_shrink([false, false]).show(ui, |ui| {
+                        for l in &ch.diff {
+                            let color = if l.starts_with('+') {
+                                p.green
+                            } else if l.starts_with('-') {
+                                p.red
+                            } else if l.starts_with("@@") {
+                                p.cyan
+                            } else {
+                                p.muted
+                            };
+                            ui.label(RichText::new(l).monospace().size(12.0).color(color));
+                        }
+                    });
+                });
+            });
+        if let Some(path) = discard {
+            match ch.discard(&path) {
+                Ok(()) => self.cmds.push(Cmd::Toast(format!("Descartado: {path}"))),
+                Err(e) => self.cmds.push(Cmd::Toast(e)),
+            }
+            ch.confirm_discard = None;
+            ch.refresh(base.as_ref());
+        }
+        if let Some(f) = open_file {
+            if let Some(err) = pane.open_link(&f) {
+                self.cmds.push(Cmd::Toast(err));
+            }
+        }
+        if close {
+            pane.changes = None;
+        }
+    }
+
+    /// Claude: aviso mientras escribe un comando y tarjeta con la explicación
+    /// de un error.
+    fn ai_ui(&mut self, ui: &mut egui::Ui, pane: &mut Pane, term_rect: Rect) {
+        let p = pal();
+        let t = ui.input(|i| i.time) as f32;
+        if let Some(t0) = pane.ai_busy {
+            let secs = t0.elapsed().as_secs();
+            let text = format!("✳ Claude está escribiendo el comando…  {secs} s  ·  Esc cancela");
+            let font = egui::FontId::proportional(12.0);
+            let w = ui.fonts(|f| f.layout_no_wrap(text.clone(), font.clone(), p.text).size().x) + 22.0;
+            let y = pane
+                .cursor_pos()
+                .map(|c| c.y + pane.backend.last_content().terminal_size.cell_height as f32 + 6.0)
+                .unwrap_or(term_rect.max.y - 40.0)
+                .min(term_rect.max.y - 28.0);
+            let r = Rect::from_min_size(pos2(term_rect.min.x, y), vec2(w, 24.0));
+            let k = 0.6 + 0.4 * (t * 3.0).sin();
+            ui.painter().rect(r, 12.0, p.surface, Stroke::new(1.0_f32, p.orange.gamma_multiply(k)), egui::StrokeKind::Inside);
+            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, text, font, p.text);
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        let Some(note) = pane.ai_note.clone() else { return };
+        let width = (term_rect.width() - 24.0).min(680.0);
+        let mut close = false;
+        egui::Area::new(egui::Id::new(("ai_note", pane.id)))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos2(term_rect.max.x - width - 4.0, term_rect.min.y + 8.0))
+            .show(ui.ctx(), |ui| {
+                popup_frame().inner_margin(egui::Margin::same(14)).show(ui, |ui| {
+                    ui.set_width(width - 28.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("✳").color(p.orange).size(15.0));
+                        ui.label(RichText::new("Claude · por qué falló").strong());
+                        ui.label(
+                            RichText::new(crate::ui::truncate(&note.command, 40))
+                                .monospace()
+                                .color(p.muted)
+                                .size(12.0),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("✕").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                    ui.add_space(6.0);
+                    match &note.body {
+                        None => {
+                            let secs = note.started.elapsed().as_secs();
+                            ui.label(RichText::new(format!("Pensando… {secs} s")).color(p.muted));
+                            ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+                        }
+                        Some(body) => {
+                            egui::ScrollArea::vertical().max_height(term_rect.height() * 0.5).show(ui, |ui| {
+                                for line in body.lines() {
+                                    if let Some(cmd) = line.trim().strip_prefix("$ ") {
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(cmd).monospace().color(p.green));
+                                            if ui.small_button("Escribir").on_hover_text("Lo deja escrito en la terminal").clicked() {
+                                                self.cmds.push(Cmd::Insert(pane.id, cmd.to_string()));
+                                                close = true;
+                                            }
+                                        });
+                                    } else {
+                                        ui.label(RichText::new(line).color(if note.error { p.red } else { p.text }));
+                                    }
+                                }
+                            });
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Copiar").clicked() {
+                                    ui.ctx().copy_text(body.clone());
+                                    self.cmds.push(Cmd::Toast("Copiado".into()));
+                                }
+                                if ui.button("Seguir en Claude Code").clicked() {
+                                    self.cmds.push(Cmd::ExplainInClaude(pane.id));
+                                }
+                            });
+                        }
+                    }
+                });
+            });
+        if close {
+            pane.ai_note = None;
+        }
+    }
+
+    /// Selección rápida: etiqueta sobre cada cosa copiable; escribir la
+    /// etiqueta la copia (en mayúscula, con Shift, la escribe en la terminal).
+    fn quick_ui(&mut self, ui: &mut egui::Ui, pane: &mut Pane, term_rect: Rect, focused: bool) {
+        let p = pal();
+        let size = &pane.backend.last_content().terminal_size;
+        let (cw, ch) = (size.cell_width as f32, size.cell_height as f32);
+        if focused {
+            let mut chosen = None;
+            let mut cancel = !self.input_enabled;
+            ui.input(|i| {
+                for e in &i.events {
+                    match e {
+                        egui::Event::Text(t) => {
+                            for c in t.chars().filter(|c| c.is_ascii_alphabetic()) {
+                                if let Some(q) = pane.quick.as_mut() {
+                                    if let Some(text) = q.key(c) {
+                                        chosen = Some((text, c.is_ascii_uppercase()));
+                                    }
+                                }
+                            }
+                        }
+                        egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => cancel = true,
+                        egui::Event::PointerButton { pressed: true, .. } => cancel = true,
+                        _ => {}
+                    }
+                }
+            });
+            if let Some((text, paste)) = chosen {
+                if paste {
+                    pane.insert(&text);
+                } else {
+                    ui.ctx().copy_text(text.clone());
+                    self.cmds.push(Cmd::Toast(format!("Copiado: {text}")));
+                }
+                cancel = true;
+            }
+            if cancel {
+                pane.quick = None;
+                return;
+            }
+        }
+        let Some(q) = pane.quick.as_ref() else { return };
+        let painter = ui.painter_at(term_rect);
+        painter.rect_filled(term_rect, 0.0, p.bg.gamma_multiply(0.35));
+        let mono = egui::FontId::monospace(ch * 0.72);
+        for h in q.hints.iter().filter(|h| h.label.starts_with(&q.typed)) {
+            let x0 = term_rect.min.x + h.c0 as f32 * cw;
+            let y0 = term_rect.min.y + h.row as f32 * ch;
+            let r = Rect::from_min_size(pos2(x0, y0), vec2((h.c1 - h.c0) as f32 * cw, ch));
+            painter.rect(r, 2.0, p.yellow.gamma_multiply(0.18), Stroke::new(1.0_f32, p.yellow.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+            let rest = &h.label[q.typed.len()..];
+            let lw = rest.chars().count() as f32 * cw + 6.0;
+            let chip = Rect::from_min_size(pos2(x0 - 2.0, y0 - 1.0), vec2(lw, ch + 2.0));
+            painter.rect_filled(chip, 3.0, p.yellow);
+            painter.text(chip.center(), egui::Align2::CENTER_CENTER, rest, mono.clone(), Color32::BLACK);
+        }
+        // Ayuda abajo.
+        let help = "Escribe la etiqueta para copiar  ·  Mayúscula la escribe en la terminal  ·  Esc sale";
+        let font = egui::FontId::proportional(12.0);
+        let w = ui.fonts(|f| f.layout_no_wrap(help.into(), font.clone(), p.text).size().x) + 24.0;
+        let r = Rect::from_center_size(pos2(term_rect.center().x, term_rect.max.y - 18.0), vec2(w, 26.0));
+        painter.rect(r, 13.0, p.surface, Stroke::new(1.0_f32, p.border), egui::StrokeKind::Inside);
+        painter.text(r.center(), egui::Align2::CENTER_CENTER, help, font, p.text);
+    }
+
     fn virtual_selection(
         &mut self,
         ui: &mut egui::Ui,
@@ -195,7 +706,8 @@ impl PaneBehavior<'_> {
                 .clamp(0.0, (n - 1) as f32);
             (r as usize, c as usize)
         };
-        if pressed && local && resp.hovered() {
+        let ctrl = ui.input(|i| i.modifiers.command);
+        if pressed && local && resp.hovered() && !ctrl {
             if let Some(p) = pos {
                 let (r, c) = cell_at(p);
                 pane.vsel = Some(crate::vsel::VSel::new(rows.clone(), r, c));
@@ -289,7 +801,11 @@ impl egui_tiles::Behavior<Pane> for PaneBehavior<'_> {
         pane.term_rect = Some(term_rect);
         self.rects.push((pane.id, rect));
         // Con la búsqueda abierta, el teclado va al cuadro de búsqueda.
-        let typing_here = focused && self.input_enabled && !pane.search.open;
+        let typing_here = focused
+            && self.input_enabled
+            && !pane.search.open
+            && pane.quick.is_none()
+            && pane.closing.is_none();
         // La selección propia (Claude Code en pantalla completa) se pinta con
         // los mismos colores que la selección normal de la terminal.
         let highlight = match pane.vsel.as_ref() {
@@ -328,6 +844,41 @@ impl egui_tiles::Behavior<Pane> for PaneBehavior<'_> {
             }
         }
         self.virtual_selection(ui, pane, &resp, term_rect);
+        // Sugerencia del historial, en gris después del cursor.
+        if focused && self.input_enabled {
+            if let Some((t, rest)) = pane.ghost.as_ref() {
+                if *t == pane.typed && pane.cursor_tail_blank() {
+                    if let Some(pos) = pane.cursor_pos() {
+                        let painter = ui.painter_at(term_rect);
+                        let font = self.font.font_type();
+                        let cw = pane.backend.last_content().terminal_size.cell_width as f32;
+                        for (i, ch) in rest.chars().enumerate() {
+                            let x = pos.x + i as f32 * cw + cw / 2.0;
+                            if x > term_rect.max.x {
+                                break;
+                            }
+                            painter.text(
+                                egui::pos2(x, pos.y),
+                                egui::Align2::CENTER_TOP,
+                                ch,
+                                font.clone(),
+                                p.muted.gamma_multiply(0.8),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        if self.blocks && pane.quick.is_none() {
+            self.blocks_ui(ui, pane, term_rect);
+        }
+        self.ai_ui(ui, pane, term_rect);
+        if pane.changes.is_some() {
+            self.changes_ui(ui, pane, term_rect);
+        }
+        if pane.quick.is_some() {
+            self.quick_ui(ui, pane, term_rect, focused);
+        }
         if self.middle_paste
             && resp.hovered()
             && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Middle))
@@ -441,6 +992,20 @@ impl egui_tiles::Behavior<Pane> for PaneBehavior<'_> {
                     .rect_filled(rect, r, p.bg.gamma_multiply(1.0 - ease));
                 ui.ctx().request_repaint();
             }
+        }
+        // Cierre: se encoge un poco y se funde con el fondo.
+        if let Some(t0) = pane.closing {
+            let t = (t0.elapsed().as_secs_f32() / CLOSE_ANIM.as_secs_f32()).min(1.0);
+            let ease = t * t;
+            ui.painter().rect_filled(rect, r, p.bg.gamma_multiply(ease));
+            let inner = rect.shrink(rect.width().min(rect.height()) * 0.04 * ease);
+            ui.painter().rect_stroke(
+                inner,
+                r,
+                Stroke::new(1.0_f32, p.border.gamma_multiply(1.0 - ease)),
+                StrokeKind::Inside,
+            );
+            ui.ctx().request_repaint();
         }
         UiResponse::None
     }
@@ -644,6 +1209,22 @@ pub fn footer(ui: &mut egui::Ui, pane: &Pane, actions: &mut Vec<Cmd>) {
     ui.spacing_mut().item_spacing.x = 6.0;
     let wide = ui.available_width() > 560.0;
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        // Mientras corre un comando: pedir aviso cuando termine.
+        if pane.running().is_some() {
+            let (text, color, hint) = if pane.notify_done {
+                ("te aviso ✓", pal().green, "Te llega una notificación al terminar · clic: cancelar")
+            } else {
+                ("avisar al terminar", pal().muted, "Recibir una notificación cuando termine este comando")
+            };
+            if chip(ui, text, color)
+                .on_hover_text(hint)
+                .interact(Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                actions.push(Cmd::NotifyWhenDone(pane.id));
+            }
+        }
         if let Some(last) = &pane.last {
             let r = if last.ok {
                 chip_icon(
@@ -732,13 +1313,22 @@ pub fn footer(ui: &mut egui::Ui, pane: &Pane, actions: &mut Vec<Cmd>) {
                 if g.staged > 0 {
                     chip(ui, &format!("+{}", g.staged), pal().green).on_hover_text("En stage");
                 }
+                let mut open_changes = false;
                 if g.modified > 0 {
-                    chip(ui, &format!("~{}", g.modified), pal().orange)
-                        .on_hover_text("Modificados");
+                    open_changes |= chip(ui, &format!("~{}", g.modified), pal().orange)
+                        .on_hover_text("Modificados · clic: ver cambios")
+                        .interact(Sense::click())
+                        .clicked();
                 }
                 if g.untracked > 0 {
-                    chip(ui, &format!("?{}", g.untracked), pal().cyan)
-                        .on_hover_text("Sin seguimiento");
+                    open_changes |= chip(ui, &format!("?{}", g.untracked), pal().cyan)
+                        .on_hover_text("Sin seguimiento · clic: ver cambios")
+                        .interact(Sense::click())
+                        .clicked();
+                }
+                if open_changes {
+                    actions.push(Cmd::FocusPane(pane.id));
+                    actions.push(Cmd::ClaudeChanges);
                 }
                 if g.conflicts > 0 {
                     chip(ui, &format!("!{}", g.conflicts), pal().red).on_hover_text("Conflictos");

@@ -18,10 +18,27 @@ mod themes;
 mod ui;
 mod update;
 mod vsel;
+mod quick;
+mod dirs;
+mod hotkey;
+mod ai;
+mod ports;
+mod changes;
+mod finder;
+mod ssh;
+mod safepaste;
+mod project;
+mod crash;
+mod help;
 mod window;
 mod workspace;
 
 fn main() -> eframe::Result {
+    crash::install();
+    // Para probar el reporte de errores: NEON_PROBAR_ERROR=1 neon
+    if std::env::var_os("NEON_PROBAR_ERROR").is_some() {
+        panic!("prueba del reporte de errores (NEON_PROBAR_ERROR)");
+    }
     shell::migrate_old_data();
     let args: Vec<String> = std::env::args().skip(1).collect();
     // `neon --instalar` / `--desinstalar`: integra con Windows y termina.

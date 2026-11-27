@@ -138,6 +138,11 @@ function global:prompt {
         # Cuántas líneas ocupa el prompt (para "copiar salida del último comando").
         $lines = @("$p" -split "`n").Count
         $last = Get-History -Count 1
+        # El primer elemento del historial es este mismo script de Neon
+        # (va como -EncodedCommand): no se reporta como comando.
+        if ($last -and $last.Id -ne $global:__wLastId -and $last.CommandLine -like '*__wLog*') {
+            $global:__wLastId = $last.Id
+        }
         if ($last -and $last.Id -ne $global:__wLastId) {
             $global:__wLastId = $last.Id
             $evt = [ordered]@{

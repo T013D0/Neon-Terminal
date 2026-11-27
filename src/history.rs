@@ -72,12 +72,19 @@ impl History {
             CREATE INDEX IF NOT EXISTS idx_commands_cmd ON commands(command);
             CREATE INDEX IF NOT EXISTS idx_commands_ts  ON commands(ts);",
         )?;
+        // Limpia el script de arranque de Neon que versiones anteriores
+        // guardaban por error como si fuera un comando.
+        let _ = conn.execute(
+            "DELETE FROM commands WHERE command LIKE '# Generado por Neon%'",
+            [],
+        );
         Ok(Self { conn })
     }
 
     pub fn record(&self, c: &NewCommand) -> Result<()> {
         let cmd = c.command.trim();
-        if cmd.is_empty() {
+        // El script con el que Neon prepara la shell no es un comando tuyo.
+        if cmd.is_empty() || cmd.starts_with("# Generado por Neon") {
             return Ok(());
         }
         self.conn.execute(
@@ -148,6 +155,18 @@ impl History {
     /// Historial para la flecha ↑: lo de esta carpeta primero, luego el resto,
     /// cada grupo de más reciente a más antiguo. Si escribiste algo, filtra por
     /// prefijo (o por contenido si nada empieza así).
+    /// Lo que falta para completar `prefix` con un comando del historial
+    /// (primero los de esta carpeta, después los más recientes).
+    pub fn suggest(&self, prefix: &str, cwd: &str) -> Option<String> {
+        if prefix.trim().chars().count() < 2 || prefix.starts_with(' ') {
+            return None;
+        }
+        self.recent(prefix, cwd, 20)
+            .into_iter()
+            .find(|e| e.command.starts_with(prefix) && e.command.len() > prefix.len())
+            .map(|e| e.command[prefix.len()..].to_string())
+    }
+
     pub fn recent(&self, query: &str, cwd: &str, limit: usize) -> Vec<Entry> {
         let Ok(cands) = self.candidates(cwd, None, 5000) else {
             return vec![];
@@ -267,6 +286,16 @@ mod tests {
         let fuzzy = match_score("gst", "git status").unwrap();
         assert!(prefix > contains && contains > fuzzy);
         assert!(match_score("xyz", "git status").is_none());
+    }
+
+    #[test]
+    fn ignores_neon_init_script() {
+        let h = History::open_in_memory().unwrap();
+        add(&h, "# Generado por Neon: colores, prompt…\n$global:__wLog = 1", "/r", true, 10);
+        add(&h, "git status", "/r", true, 11);
+        let r = h.recent("", "/r", 10);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].command, "git status");
     }
 
     #[test]

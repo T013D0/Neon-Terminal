@@ -410,6 +410,38 @@ fn terminal(ui: &mut egui::Ui, s: &mut Settings, profiles: &[Profile]) {
         "Preguntar antes de cerrar si hay un comando corriendo",
     );
 
+    heading(ui, "Atajo global (modo Quake)");
+    ui.checkbox(
+        &mut s.quake,
+        "Mostrar u ocultar Neon desde cualquier aplicación",
+    );
+    ui.add_enabled_ui(s.quake, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Atajo:");
+            ui.add(egui::TextEdit::singleline(&mut s.quake_key).desired_width(160.0));
+            if crate::hotkey::parse(&s.quake_key).is_none() {
+                ui.label(egui::RichText::new("no se entiende").color(crate::theme::pal().red));
+            }
+        });
+    });
+    hint(ui, "Por ejemplo Ctrl+Alt+T, Win+Space o F12. Si otra app ya lo usa, Neon te avisa.");
+
+    heading(ui, "Sugerencias al escribir");
+    ui.checkbox(
+        &mut s.autosuggest,
+        "Completar en gris con el historial (→ acepta la sugerencia)",
+    );
+    ui.checkbox(
+        &mut s.cd_suggest,
+        "Al escribir «cd » mostrar las carpetas (Tab entra, Enter va, Esc cierra)",
+    );
+
+    heading(ui, "Bloques de comandos");
+    ui.checkbox(
+        &mut s.blocks,
+        "Separar cada comando y su salida (copiar, estado y encabezado fijo al hacer scroll)",
+    );
+
     heading(ui, "Selección y portapapeles");
     ui.checkbox(
         &mut s.copy_on_select,
@@ -423,6 +455,28 @@ fn terminal(ui: &mut egui::Ui, s: &mut Settings, profiles: &[Profile]) {
     ui.checkbox(
         &mut s.smart_paste,
         "Ctrl+V inteligente (texto, archivos copiados e imágenes)",
+    );
+
+    heading(ui, "Pegado seguro");
+    ui.checkbox(
+        &mut s.safe_paste,
+        "Confirmar antes de pegar comandos riesgosos, caracteres invisibles o varias líneas que se ejecutarían",
+    );
+
+    heading(ui, "Claude en la terminal");
+    ui.checkbox(
+        &mut s.ai,
+        "«# pedido» + Enter escribe el comando, y botón para explicar errores",
+    );
+    ui.add_enabled_ui(s.ai, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Modelo:");
+            ui.add(egui::TextEdit::singleline(&mut s.ai_model).desired_width(120.0));
+        });
+    });
+    hint(
+        ui,
+        "Usa tu Claude Code instalado (claude -p) con tu misma cuenta: no hace falta API key. «haiku» es el más rápido; vacío usa el de siempre.",
     );
 
     heading(ui, "Claude Code");
@@ -649,6 +703,21 @@ fn advanced(ui: &mut egui::Ui, s: &mut Settings) {
             let _ = open::that_detached(crate::shell::data_dir());
         }
     });
+    if cfg!(windows) {
+        heading(ui, "Consola de Windows (ConPTY)");
+        let modern = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|d| d.join("conpty.dll").is_file()))
+            .unwrap_or(false);
+        hint(
+            ui,
+            if modern {
+                "Usando el ConPTY de Windows Terminal (conpty.dll + OpenConsole.exe junto a neon.exe): pegado, colores y mouse más fieles."
+            } else {
+                "Usando el ConPTY que trae Windows. Reinstala Neon o corre scripts/get-conpty.ps1 para usar el de Windows Terminal."
+            },
+        );
+    }
     heading(ui, "Empezar de cero");
     if ui.button("Restaurar todos los ajustes").clicked() {
         let themes = std::mem::take(&mut s.custom_themes);

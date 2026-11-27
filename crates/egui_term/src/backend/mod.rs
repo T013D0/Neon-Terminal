@@ -137,6 +137,8 @@ pub struct TerminalBackend {
     pub id: u64,
     pub url_regex: RegexSearch,
     pending_link: Option<String>,
+    /// Patched (neon): destino del hipervínculo OSC 8 bajo el mouse, si hay.
+    hovered_uri: Option<String>,
     term: Arc<FairMutex<Term<EventProxy>>>,
     size: TerminalSize,
     notifier: Notifier,
@@ -170,7 +172,9 @@ impl TerminalBackend {
         let event_proxy = EventProxy(event_sender);
         let mut term = Term::new(config, &terminal_size, event_proxy.clone());
         let initial_content = RenderableContent {
-            grid: term.grid().clone(),
+            display_offset: 0,
+            history_size: 0,
+            cursor_point: term.grid().cursor.point,
             selectable_range: None,
             terminal_mode: *term.mode(),
             terminal_size,
@@ -204,6 +208,7 @@ impl TerminalBackend {
             id,
             url_regex,
             pending_link: None,
+            hovered_uri: None,
             term: term.clone(),
             size: terminal_size,
             notifier,
@@ -259,13 +264,21 @@ impl TerminalBackend {
         let content = self.last_content();
         let mut result = String::new();
         if let Some(range) = content.selectable_range {
-            for indexed in content.grid.display_iter() {
-                if range.contains(indexed.point) {
-                    result.push(indexed.c);
+            self.with_grid(|grid| {
+                for indexed in grid.display_iter() {
+                    if range.contains(indexed.point) {
+                        result.push(indexed.c);
+                    }
                 }
-            }
+            });
         }
         result
+    }
+
+    /// Patched (neon): acceso a la grilla viva (con el historial) sin copiarla.
+    pub fn with_grid<R>(&self, f: impl FnOnce(&Grid<Cell>) -> R) -> R {
+        let term = self.term.lock();
+        f(term.grid())
     }
 
     pub fn sync(&mut self) -> &RenderableContent {
@@ -277,7 +290,9 @@ impl TerminalBackend {
         };
 
         let cursor = terminal.grid_mut().cursor_cell().clone();
-        self.last_content.grid = terminal.grid().clone();
+        self.last_content.display_offset = terminal.grid().display_offset();
+        self.last_content.history_size = terminal.grid().history_size();
+        self.last_content.cursor_point = terminal.grid().cursor.point;
         self.last_content.selectable_range = selectable_range;
         self.last_content.cursor = cursor.clone();
         self.last_content.terminal_mode = *terminal.mode();
@@ -297,17 +312,26 @@ impl TerminalBackend {
     ) {
         match link_action {
             LinkAction::Hover => {
-                self.last_content.hovered_hyperlink = self.regex_match_at(
-                    terminal,
-                    point,
-                    &mut self.url_regex.clone(),
-                );
+                // Primero los hipervínculos explícitos (OSC 8, los que manda
+                // Claude Code, ls --hyperlink…); si no, URLs y rutas en el texto.
+                if let Some((range, uri)) = hyperlink_at(terminal, point) {
+                    self.last_content.hovered_hyperlink = Some(range);
+                    self.hovered_uri = Some(uri);
+                } else {
+                    self.hovered_uri = None;
+                    self.last_content.hovered_hyperlink = self.regex_match_at(
+                        terminal,
+                        point,
+                        &mut self.url_regex.clone(),
+                    );
+                }
             },
             LinkAction::Clear => {
                 self.last_content.hovered_hyperlink = None;
+                self.hovered_uri = None;
             },
             LinkAction::Open => {
-                self.open_link();
+                self.open_link(terminal);
             },
         };
     }
@@ -315,13 +339,16 @@ impl TerminalBackend {
     /// Patched (neon): en vez de abrir el link aquí (y entrar en pánico si
     /// falla), lo deja pendiente para que la app decida: URL → navegador,
     /// ruta de archivo → editor en la línea indicada.
-    fn open_link(&mut self) {
-        if let Some(range) = &self.last_content.hovered_hyperlink {
+    fn open_link(&mut self, terminal: &Term<EventProxy>) {
+        if let Some(uri) = self.hovered_uri.clone() {
+            self.pending_link = Some(uri);
+        } else if let Some(range) = &self.last_content.hovered_hyperlink {
             let start = range.start();
             let end = range.end();
 
-            let mut url = String::from(self.last_content.grid.index(*start).c);
-            for indexed in self.last_content.grid.iter_from(*start) {
+            let grid = terminal.grid();
+            let mut url = String::from(grid.index(*start).c);
+            for indexed in grid.iter_from(*start) {
                 url.push(indexed.c);
                 if indexed.point == *end {
                     break;
@@ -565,6 +592,29 @@ impl TerminalBackend {
     }
 }
 
+/// Patched (neon): hipervínculo OSC 8 en `point` y el tramo de celdas que cubre.
+fn hyperlink_at(
+    term: &Term<EventProxy>,
+    point: Point,
+) -> Option<(Match, String)> {
+    let grid = term.grid();
+    if point.line < term.topmost_line() || point.line > term.bottommost_line() {
+        return None;
+    }
+    let link = grid[point].hyperlink()?;
+    let last = term.columns().saturating_sub(1);
+    let same = |p: Point| grid[p].hyperlink().as_ref() == Some(&link);
+    let mut start = point;
+    while start.column.0 > 0 && same(Point::new(start.line, start.column - 1)) {
+        start.column -= 1;
+    }
+    let mut end = point;
+    while end.column.0 < last && same(Point::new(end.line, end.column + 1)) {
+        end.column += 1;
+    }
+    Some((start..=end, link.uri().to_string()))
+}
+
 /// Copied from alacritty/src/display/hint.rs:
 /// Iterate over all visible regex matches.
 fn visible_regex_match_iter<'a>(
@@ -585,7 +635,11 @@ fn visible_regex_match_iter<'a>(
 }
 
 pub struct RenderableContent {
-    pub grid: Grid<Cell>,
+    /// Patched (neon): ya no se copia la grilla entera (con todo el historial)
+    /// en cada frame; se lee del terminal con `TerminalBackend::with_grid`.
+    pub display_offset: usize,
+    pub history_size: usize,
+    pub cursor_point: Point,
     pub hovered_hyperlink: Option<RangeInclusive<Point>>,
     pub selectable_range: Option<SelectionRange>,
     pub cursor: Cell,
@@ -596,7 +650,9 @@ pub struct RenderableContent {
 impl Default for RenderableContent {
     fn default() -> Self {
         Self {
-            grid: Grid::new(0, 0, 0),
+            display_offset: 0,
+            history_size: 0,
+            cursor_point: Point::default(),
             hovered_hyperlink: None,
             selectable_range: None,
             cursor: Cell::default(),

@@ -9,6 +9,45 @@ pub enum Cmd {
     NewTab(Option<ProfileKind>),
     SplitRight,
     SplitDown,
+    /// Divide a la derecha y abre Claude Code en la misma carpeta.
+    ClaudeSplit,
+    /// Etiquetas sobre URLs, rutas, hashes… para copiarlos con una tecla.
+    QuickSelect,
+    /// Pedirle a Claude que explique por qué falló el bloque (panel, índice).
+    ExplainBlock(u64, usize),
+    /// Explicar el último comando que falló en el panel enfocado.
+    ExplainLast,
+    /// Seguir la explicación en Claude Code, en un panel al lado.
+    ExplainInClaude(u64),
+    /// Lista de puertos en uso.
+    Ports,
+    /// Historial de lo copiado en Neon (para pegar algo anterior).
+    ClipHistory,
+    /// Mandar el panel enfocado a segundo plano / traer uno de vuelta / detenerlo.
+    SendToBackground,
+    BgRestore(u64),
+    BgStop(u64),
+    /// Panel con los archivos que cambió Claude (o cualquier cambio sin commit).
+    ClaudeChanges,
+    /// Buscar un archivo del proyecto y abrirlo (o pegar su ruta).
+    FindFile,
+    /// Avisar cuando termine el comando que corre (0 = panel enfocado).
+    NotifyWhenDone(u64),
+    /// Abrir una pestaña nueva conectada por SSH a ese host.
+    Ssh(String),
+    /// Ejecutar en el panel enfocado (comandos del `.neon.toml`).
+    RunHere(String),
+    /// Reabrir la última pestaña cerrada.
+    ReopenTab,
+    /// Pantalla con todos los atajos.
+    ShowShortcuts,
+    /// Recorrido de bienvenida.
+    ShowTour,
+    /// Pedir nombre y guardar las pestañas de esta ventana como espacio de trabajo.
+    StartSaveLayout,
+    SaveLayout(String),
+    OpenLayout(String),
+    DeleteLayout(String),
     ClosePane,
     CloseTab(usize),
     NewWindow,
@@ -110,6 +149,48 @@ pub fn bindables() -> Vec<Bindable> {
             "Dividir hacia abajo",
             "Ctrl+Shift+E",
             Cmd::SplitDown,
+        ),
+        b(
+            "claude_split",
+            "Claude Code en un panel al lado",
+            "Ctrl+Shift+K",
+            Cmd::ClaudeSplit,
+        ),
+        b(
+            "clip_history",
+            "Historial del portapapeles",
+            "Ctrl+Shift+H",
+            Cmd::ClipHistory,
+        ),
+        b(
+            "shortcuts",
+            "Atajos de teclado",
+            "F1",
+            Cmd::ShowShortcuts,
+        ),
+        b(
+            "reopen_tab",
+            "Reabrir la pestaña cerrada",
+            "Ctrl+Shift+Z",
+            Cmd::ReopenTab,
+        ),
+        b(
+            "find_file",
+            "Buscar archivo del proyecto",
+            "Ctrl+Shift+A",
+            Cmd::FindFile,
+        ),
+        b(
+            "claude_changes",
+            "Cambios (archivos modificados, con diff)",
+            "Ctrl+Shift+G",
+            Cmd::ClaudeChanges,
+        ),
+        b(
+            "quick_select",
+            "Selección rápida (copiar URLs, rutas, hashes…)",
+            "Ctrl+Shift+Space",
+            Cmd::QuickSelect,
         ),
         b("search", "Buscar en la salida", "Ctrl+Shift+F", Cmd::Search),
         b(
@@ -273,6 +354,19 @@ pub fn palette_items(
         it(Cmd::NewTab(None), "Nueva pestaña", "Ctrl+Shift+T"),
         it(Cmd::SplitRight, "Dividir a la derecha", "Ctrl+Shift+D"),
         it(Cmd::SplitDown, "Dividir hacia abajo", "Ctrl+Shift+E"),
+        it(Cmd::ClaudeSplit, "Claude Code en un panel al lado", "Ctrl+Shift+K"),
+        it(Cmd::ClipHistory, "Historial del portapapeles", "Ctrl+Shift+H"),
+        it(Cmd::ReopenTab, "Reabrir la pestaña cerrada", "Ctrl+Shift+Z"),
+        it(Cmd::ShowShortcuts, "Atajos de teclado", "F1"),
+        it(Cmd::ShowTour, "Ver el recorrido de bienvenida", ""),
+        it(Cmd::FindFile, "Buscar archivo del proyecto (abrir o pegar la ruta)", "Ctrl+Shift+A"),
+        it(Cmd::NotifyWhenDone(0), "Avisarme cuando termine el comando que está corriendo", ""),
+        it(Cmd::ClaudeChanges, "Cambios: archivos modificados (por Claude u otros), con diff", "Ctrl+Shift+G"),
+        it(Cmd::SendToBackground, "Mandar este panel a segundo plano (servidores, watchers…)", ""),
+        it(Cmd::ExplainLast, "Explicar con Claude el último error", ""),
+        it(Cmd::Ports, "Puertos en uso (ver y cerrar procesos)", ""),
+        it(Cmd::StartSaveLayout, "Guardar espacio de trabajo (pestañas, paneles y comandos)…", ""),
+        it(Cmd::QuickSelect, "Selección rápida: copiar URLs, rutas, hashes…", "Ctrl+Shift+Space"),
         it(Cmd::ClosePane, "Cerrar panel", "Ctrl+Shift+W"),
         it(Cmd::CloseTab(active_tab), "Cerrar pestaña", ""),
         it(Cmd::NewWindow, "Nueva ventana", "Ctrl+Shift+N"),
@@ -362,6 +456,42 @@ pub fn palette_items(
                 "",
             ));
         }
+    }
+    // Comandos del proyecto (.neon.toml): se ejecutan solo si los eliges.
+    if let Some(p) = crate::project::current() {
+        let name = p
+            .nombre
+            .clone()
+            .unwrap_or_else(|| p.dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        for (k, c) in &p.comandos {
+            v.push(it(Cmd::RunHere(c.clone()), &format!("{name}: {k}  —  {c}"), ""));
+        }
+    }
+    // Servidores de ~/.ssh/config.
+    for h in crate::ssh::hosts() {
+        let label = match &h.target {
+            Some(t) => format!("SSH: {} ({t})", h.name),
+            None => format!("SSH: {}", h.name),
+        };
+        v.push(it(Cmd::Ssh(h.name.clone()), &label, ""));
+    }
+    // Espacios de trabajo guardados.
+    for l in crate::session::load_layouts() {
+        let tabs = l.tabs.len();
+        v.push(it(
+            Cmd::OpenLayout(l.name.clone()),
+            &format!(
+                "Abrir espacio: {} ({tabs} pestaña{})",
+                l.name,
+                if tabs == 1 { "" } else { "s" }
+            ),
+            "",
+        ));
+        v.push(it(
+            Cmd::DeleteLayout(l.name.clone()),
+            &format!("Borrar espacio: {}", l.name),
+            "",
+        ));
     }
     v
 }

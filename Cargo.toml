@@ -3,7 +3,7 @@ members = [".", "installer"]
 
 # Una sola versión para Neon y su instalador (se cambia aquí al publicar).
 [workspace.package]
-version = "0.2.6"
+version = "1.0.0"
 edition = "2024"
 
 [package]
@@ -22,6 +22,7 @@ egui_term = { path = "crates/egui_term" }
 egui_tiles = "0.12"
 notify-rust = "4"
 open = "5"
+memmap2 = "0.9"
 raw-window-handle = "0.6"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }

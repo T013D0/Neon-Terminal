@@ -97,18 +97,40 @@ pub fn terminal_theme(opacity: f32) -> TerminalTheme {
     }))
 }
 
-fn load(paths: &[&str]) -> Option<Vec<u8>> {
-    paths.iter().find_map(|p| std::fs::read(p).ok())
+/// Fuentes del sistema mapeadas en memoria en vez de copiadas: el sistema
+/// solo carga las partes que se usan (una fuente japonesa pesa 10–20 MB y casi
+/// nunca se necesita entera). Se mapean una sola vez aunque se cambie de tema.
+fn load(paths: &[&str]) -> Option<&'static [u8]> {
+    static CACHE: std::sync::Mutex<Vec<(String, &'static [u8])>> = std::sync::Mutex::new(Vec::new());
+    let mut cache = CACHE.lock().unwrap();
+    for p in paths {
+        if let Some((_, b)) = cache.iter().find(|(c, _)| c == p) {
+            return Some(b);
+        }
+        let Ok(file) = std::fs::File::open(p) else { continue };
+        // SAFETY: las fuentes del sistema no cambian mientras Neon corre; si
+        // el mapeo falla, se lee el archivo como antes.
+        let bytes: &'static [u8] = match unsafe { memmap2::Mmap::map(&file) } {
+            Ok(m) => {
+                let m: &'static memmap2::Mmap = Box::leak(Box::new(m));
+                &m[..]
+            }
+            Err(_) => Box::leak(std::fs::read(p).ok()?.into_boxed_slice()),
+        };
+        cache.push((p.to_string(), bytes));
+        return Some(bytes);
+    }
+    None
 }
 
 /// Cascadia para la terminal, Segoe UI para la interfaz (con respaldo
 /// japonés por si aparece texto en kanji). Si no existen, usa equivalentes.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    let add = |fonts: &mut FontDefinitions, name: &str, bytes: Vec<u8>| {
+    let add = |fonts: &mut FontDefinitions, name: &str, bytes: &'static [u8]| {
         fonts
             .font_data
-            .insert(name.into(), Arc::new(FontData::from_owned(bytes)));
+            .insert(name.into(), Arc::new(FontData::from_static(bytes)));
     };
 
     // Terminal: Cascadia Mono con íconos Nerd Font, incluida en el programa
@@ -116,7 +138,7 @@ pub fn install_fonts(ctx: &egui::Context) {
     add(
         &mut fonts,
         "mono",
-        include_bytes!("../assets/fonts/CaskaydiaMonoNerdFontMono-Regular.ttf").to_vec(),
+        include_bytes!("../assets/fonts/CaskaydiaMonoNerdFontMono-Regular.ttf"),
     );
     fonts
         .families

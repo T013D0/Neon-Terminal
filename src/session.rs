@@ -37,6 +37,9 @@ pub enum LayoutNode {
     Pane {
         cwd: String,
         profile: ProfileKind,
+        /// Comando a ejecutar al abrir (solo en espacios de trabajo guardados).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run: Option<String>,
     },
     Split {
         horizontal: bool,
@@ -68,12 +71,95 @@ pub fn save(s: &Session) {
     }
 }
 
+/// Un espacio de trabajo guardado con nombre: las pestañas de una ventana,
+/// con sus divisiones, carpetas y lo que estaba corriendo en cada panel.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct NamedLayout {
+    pub name: String,
+    pub active: usize,
+    pub tabs: Vec<TabState>,
+}
+
+fn layouts_path() -> PathBuf {
+    crate::shell::data_dir().join("espacios.json")
+}
+
+pub fn load_layouts() -> Vec<NamedLayout> {
+    std::fs::read_to_string(layouts_path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_layouts(v: &[NamedLayout]) {
+    let p = layouts_path();
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(v) {
+        let _ = std::fs::write(p, json);
+    }
+}
+
+/// Guarda (o reemplaza, si ya hay uno con ese nombre).
+pub fn upsert_layout(l: NamedLayout) {
+    let mut v = load_layouts();
+    v.retain(|x| !x.name.eq_ignore_ascii_case(&l.name));
+    v.push(l);
+    v.sort_by_key(|x| x.name.to_lowercase());
+    save_layouts(&v);
+}
+
+pub fn delete_layout(name: &str) {
+    let mut v = load_layouts();
+    v.retain(|x| x.name != name);
+    save_layouts(&v);
+}
+
+/// Como `layout_of`, pero recordando el comando que corre en cada panel.
+pub fn layout_with_commands(tiles: &Tiles<Pane>, id: TileId) -> Option<LayoutNode> {
+    let mut l = layout_of(tiles, id)?;
+    fn fill(l: &mut LayoutNode, tiles: &Tiles<Pane>, panes: &mut std::vec::IntoIter<TileId>) {
+        match l {
+            LayoutNode::Pane { run, .. } => {
+                if let Some(Tile::Pane(p)) = panes.next().and_then(|t| tiles.get(t)) {
+                    *run = p.running().filter(|c| c != "un comando");
+                }
+            }
+            LayoutNode::Split { children, .. } => {
+                for (_, c) in children {
+                    fill(c, tiles, panes);
+                }
+            }
+        }
+    }
+    let mut panes = pane_tiles(tiles, id).into_iter();
+    fill(&mut l, tiles, &mut panes);
+    Some(l)
+}
+
+/// Paneles bajo `id`, en el mismo orden que recorre `layout_of`.
+fn pane_tiles(tiles: &Tiles<Pane>, id: TileId) -> Vec<TileId> {
+    match tiles.get(id) {
+        Some(Tile::Pane(_)) => vec![id],
+        Some(Tile::Container(c)) => {
+            let kids = match c {
+                Container::Linear(l) => l.children.clone(),
+                other => other.children_vec(),
+            };
+            kids.into_iter().flat_map(|k| pane_tiles(tiles, k)).collect()
+        }
+        None => vec![],
+    }
+}
+
 /// Describe el árbol de paneles a partir de `id`.
 pub fn layout_of(tiles: &Tiles<Pane>, id: TileId) -> Option<LayoutNode> {
     match tiles.get(id)? {
         Tile::Pane(p) => Some(LayoutNode::Pane {
             cwd: p.cwd.clone(),
             profile: p.profile,
+            run: None,
         }),
         Tile::Container(c) => {
             let (horizontal, kids, shares): (bool, Vec<TileId>, Vec<f32>) = match c {
@@ -131,6 +217,7 @@ mod tests {
                                 LayoutNode::Pane {
                                     cwd: "/a".into(),
                                     profile: ProfileKind::Bash,
+                                    run: None,
                                 },
                             ),
                             (
@@ -138,6 +225,7 @@ mod tests {
                                 LayoutNode::Pane {
                                     cwd: "/b".into(),
                                     profile: ProfileKind::Wsl,
+                                    run: None,
                                 },
                             ),
                         ],

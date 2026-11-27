@@ -26,8 +26,10 @@ impl ProfileKind {
     /// Secuencia que borra la línea que se está escribiendo.
     pub fn clear_line(self) -> &'static str {
         match self {
-            // PSReadLine (modo Windows) y cmd: Esc borra la línea.
-            ProfileKind::PowerShell | ProfileKind::Cmd => "\x1b",
+            // PSReadLine (modo Windows) y cmd: Ctrl+Fin borra hasta el final y
+            // Ctrl+Inicio hasta el principio. (No Esc: por la consola de Windows
+            // un Esc seguido de texto llega como Alt+tecla y no borra nada.)
+            ProfileKind::PowerShell | ProfileKind::Cmd => "\x1b[1;5F\x1b[1;5H",
             // readline: ir al final y borrar hasta el inicio.
             _ => "\x05\x15",
         }

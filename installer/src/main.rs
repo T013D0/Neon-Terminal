@@ -19,6 +19,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 static PAYLOAD: &[u8] = include_bytes!(env!("NEON_PAYLOAD"));
+// conpty.dll y OpenConsole.exe de Windows Terminal (si se incluyeron al compilar).
+include!(concat!(env!("OUT_DIR"), "/extra.rs"));
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const BG_TOP: Color32 = Color32::from_rgb(0x1d, 0x1e, 0x27);
@@ -160,6 +162,16 @@ fn run_job(tx: mpsc::Sender<Msg>, ctx: egui::Context, job: Job, opts: Opts, purg
         }
         std::fs::write(&exe, PAYLOAD).map_err(|e| format!("No pude copiar Neon: {e}"))?;
         let _ = std::fs::write(dir.join("version.txt"), VERSION);
+        // Igual que el exe: si Neon está abierto, conpty.dll está en uso.
+        for (name, bytes) in EXTRA {
+            let file = dir.join(name);
+            let old = dir.join(format!("{name}.old"));
+            let _ = std::fs::remove_file(&old);
+            if file.exists() {
+                let _ = std::fs::rename(&file, &old);
+            }
+            let _ = std::fs::write(&file, bytes);
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

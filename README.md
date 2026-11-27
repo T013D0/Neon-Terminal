@@ -65,7 +65,7 @@ El prompt muestra el proyecto, la rama, commits por subir o bajar y archivos cam
 <td valign="top">
 
 **Búsqueda y navegación**<br>
-Busca en la salida con resaltado y contador, salta entre los prompts anteriores con `Ctrl+↑/↓`, copia la salida del último comando y abre links o rutas de archivo con `Ctrl+click`.
+Mientras escribes, Neon sugiere en gris cómo completar el comando según tu historial (`→` acepta) y, al escribir `cd `, muestra las carpetas para elegir con el teclado. Puedes guardar las pestañas de una ventana como **espacio de trabajo** con nombre (paneles, carpetas y lo que corría, como `claude` o `npm run dev`) y abrirlo después desde la paleta. Cada comando y su salida forman un **bloque**: barra de estado (✓/✕ y duración), botones para copiar el comando o la salida, y el comando queda fijo arriba mientras lees su salida. Busca en la salida con resaltado y contador, salta entre comandos con `Ctrl+↑/↓` y abre links, rutas de archivo e hipervínculos (los de Claude Code incluidos) con `Ctrl+click`.
 
 </td>
 <td valign="top">
@@ -130,15 +130,18 @@ Necesitas [Rust](https://rustup.rs) (con las *Build Tools* de Visual Studio) y `
 ```powershell
 git clone https://github.com/T013D0/Neon-Terminal.git
 cd Neon-Terminal
-.\build-installer.cmd        # genera dist\NeonSetup.exe
+.\build-installer.cmd        # genera dist\NeonSetup.exe (con el ConPTY de Windows Terminal)
 ```
 
 O sin instalador:
 
 ```powershell
 cargo build --release
+powershell -ExecutionPolicy Bypass -File scripts\get-conpty.ps1   # opcional: ConPTY moderno
 .\target\release\neon.exe --instalar
 ```
+
+Neon usa el ConPTY de Windows Terminal (`conpty.dll` + `OpenConsole.exe`) si están junto a `neon.exe`: el pegado, los colores y el mouse en apps como Claude Code son más fieles que con el que trae Windows. El instalador ya los incluye; en *Ajustes → Avanzado* se ve cuál se está usando.
 
 <details>
 <summary><b>Opciones de línea de comandos</b></summary>
@@ -173,6 +176,17 @@ Todos se pueden cambiar en **Ajustes → Atajos**.
 | `Ctrl+Shift+N` | Nueva ventana |
 | `Ctrl+Tab` · `Ctrl+Shift+Tab` · `Ctrl+1…9` | Cambiar de pestaña |
 | `Ctrl+Shift+D` · `Ctrl+Shift+E` | Dividir a la derecha · hacia abajo |
+| `Ctrl+Shift+K` | Abrir Claude Code en un panel al lado, en la misma carpeta |
+| `Ctrl+Alt+T` (global) | Mostrar u ocultar Neon desde cualquier aplicación (modo Quake; se cambia en Ajustes) |
+| `cd ` + `Tab` / `Enter` | Lista de carpetas: escribe para filtrar, `Tab` entra, `Enter` va, `Esc` cierra |
+| `→` | Aceptar la sugerencia en gris del historial |
+| `F1` | Todos los atajos (con buscador). El recorrido de bienvenida se repite desde la paleta |
+| `Ctrl+Shift+Z` | Reabrir la última pestaña cerrada (hasta 10, con sus paneles y carpetas) |
+| `Ctrl+Shift+A` | Buscar archivo del proyecto (difuso: `apprs` → `src/app.rs`); Enter lo abre en el editor, Tab pega la ruta |
+| `Ctrl+Shift+H` | Historial del portapapeles: lo último que copiaste en Neon (1–9 o Enter pega) |
+| `Ctrl+Shift+G` | Cambios: archivos modificados con su diff (marca los que cambió Claude) · también clic en `~N` abajo |
+| `# pedido` + `Enter` | Claude escribe el comando (por ejemplo `# borra las ramas ya mergeadas`); queda escrito para revisarlo · `Esc` cancela |
+| `Ctrl+Shift+Space` | Selección rápida: etiquetas sobre URLs, rutas, hashes, IPs; la letra copia (mayúscula la escribe en la terminal) |
 | `Alt+←↑↓→` | Mover el foco entre paneles |
 | `Alt+Shift+←↑↓→` | Agrandar o achicar el panel |
 | `Ctrl+Shift+Enter` | Maximizar o restaurar el panel |
@@ -239,6 +253,35 @@ new_tab = "Ctrl+Shift+T"
 Si usas oh-my-posh o starship, Neon respeta tu prompt; para desactivar el suyo define `NEON_PROMPT=0`.
 
 ## Claude Code
+
+**Sin API key.** Neon usa tu Claude Code instalado en modo sin interfaz (`claude -p`), con tu misma cuenta:
+
+- **`# pedido` + Enter** convierte lo que pides en un comando para tu shell y lo deja escrito (no se ejecuta solo).
+- **✳ Explicar el error**: en un comando que falló, el botón del bloque (o *Explicar con Claude el último error* en la paleta) muestra por qué falló y cómo arreglarlo; los comandos sugeridos se escriben con un clic, y *Seguir en Claude Code* abre la conversación en un panel al lado.
+- El modelo se elige en *Ajustes → General → Claude en la terminal* (`haiku` por defecto, el más rápido).
+
+**Cambios** (`Ctrl+Shift+G`): lista de archivos sin commit con su diff; los que cambiaron desde que arrancó Claude Code salen marcados con ✳. Desde ahí se abren en el editor o se descartan (pide confirmar). Todo se lee de git solo mientras el panel está abierto.
+
+**Segundo plano** (paleta → *Mandar este panel a segundo plano*): el panel sale de las pestañas y queda como un chip en la barra (verde corriendo, rojo si falló o se cerró, con aviso). Clic lo trae de vuelta; clic derecho lo detiene. No se dibuja mientras está en el fondo.
+
+**Avisarme cuando termine**: mientras corre un comando, el chip *avisar al terminar* (abajo a la derecha) te manda una notificación cuando acabe, aunque estés en otra app.
+
+**SSH**: los servidores de tu `~/.ssh/config` aparecen en la paleta (`SSH: nombre`) y se abren en una pestaña nueva.
+
+**Pegado seguro**: si lo que pegas tiene caracteres invisibles, comandos riesgosos (`rm -rf`, `sudo`, `curl … | sh`, `irm … | iex`…) o varias líneas que la shell ejecutaría, Neon te muestra el texto y pide confirmar. Se apaga en *Ajustes → General*.
+
+**`.neon.toml` por proyecto**: un archivo en la carpeta del proyecto le pone nombre y color a la pestaña y agrega sus comandos a la paleta. Los comandos nunca se ejecutan solos: solo si los eliges.
+
+```toml
+nombre = "API pagos"
+color = "verde"            # rojo, naranja, amarillo, verde, cian, violeta
+
+[comandos]
+dev = "npm run dev"
+tests = "npm test"
+```
+
+**Puertos en uso** (paleta): qué programa escucha en cada puerto, con botón para cerrarlo; útil con el típico *address already in use*.
 
 Neon trae ayudas para usar el CLI de Claude Code (todas se pueden apagar en Ajustes → Terminal):
 
@@ -329,12 +372,19 @@ Para trabajar sobre el código, `cargo run -- C:\ruta\a\un\proyecto` abre Neon e
 El workflow [`release.yml`](.github/workflows/release.yml) compila en Windows y adjunta `NeonSetup.exe` al release.
 
 ```powershell
-# 1. Cambia `version` en [workspace.package] de Cargo.toml (por ejemplo "0.2.0") y haz commit
-git tag v0.2.0
+# 1. Anota lo nuevo en CHANGELOG.md, bajo un título "## 1.1.0 — fecha"
+# 2. Cambia `version` en [workspace.package] de Cargo.toml (por ejemplo "1.1.0") y haz commit
+git tag v1.1.0
 git push --tags
 ```
 
+Las notas del release salen de la sección de esa versión en [`CHANGELOG.md`](CHANGELOG.md) (si no hay, GitHub las genera con los commits).
+
 El tag tiene que coincidir con la versión de `Cargo.toml`; si no, el workflow falla a propósito. Neon y su instalador comparten esa única versión. Para que el workflow pueda crear el release, activa **Settings → Actions → General → Workflow permissions → Read and write**.
+
+**Firma de código (opcional).** Sin firma, Windows SmartScreen avisa al abrir el instalador. Con un certificado de firma de código (`.pfx`), agrega en **Settings → Secrets and variables → Actions** los secretos `WINDOWS_CERT_PFX` (el `.pfx` en base64) y `WINDOWS_CERT_PASSWORD`; el workflow firma `neon.exe` y `NeonSetup.exe` con [`scripts/sign.ps1`](scripts/sign.ps1). Sin esos secretos se publica igual, sin firmar.
+
+Además, [`check.yml`](.github/workflows/check.yml) compila y corre los tests en Windows en cada push. Para medir el rendimiento, `NEON_FPS=1` imprime los cuadros por segundo y el tiempo de CPU por cuadro.
 
 ## Créditos
 

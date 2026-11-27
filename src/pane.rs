@@ -17,6 +17,41 @@ pub struct LastCommand {
     pub duration_ms: Option<i64>,
 }
 
+/// Lo que Claude explicó sobre un comando que falló.
+#[derive(Clone, Debug)]
+pub struct AiNote {
+    pub command: String,
+    /// Salida que se le pasó (para seguir en Claude Code).
+    pub output: String,
+    /// None mientras piensa.
+    pub body: Option<String>,
+    pub error: bool,
+    pub started: Instant,
+}
+
+/// Un bloque: un comando y su salida (como en Warp).
+#[derive(Clone, Debug)]
+pub struct Block {
+    /// Línea (absoluta) donde se escribió el comando.
+    pub prompt: i64,
+    pub command: String,
+    /// None mientras corre.
+    pub ok: Option<bool>,
+    pub started: Instant,
+    pub duration: Option<Duration>,
+}
+
+/// Un bloque ubicado en pantalla (filas pueden quedar fuera: negativas o > alto).
+#[derive(Clone, Debug)]
+pub struct BlockView {
+    pub index: usize,
+    /// Primera fila del bloque (incluye el prompt completo) y fila tras la última.
+    pub top: i64,
+    pub bottom: i64,
+    /// Fila donde se escribió el comando.
+    pub cmd_row: i64,
+}
+
 /// Un comando que terminó, con cuánto tardó medido por Neon (sirve para
 /// cualquier shell, incluso las que no informan la duración).
 pub struct Finished {
@@ -45,8 +80,34 @@ pub struct Pane {
     pub attention: bool,
     /// Cuándo se creó (para la animación de aparición).
     pub born: Instant,
+    /// Comando a ejecutar apenas la shell esté lista (p. ej. `claude`).
+    pub pending_run: Option<String>,
+    /// Se está cerrando (animación de salida).
+    pub closing: Option<Instant>,
+    /// Claude Code terminó de trabajar sin que estuvieras mirando.
+    pub claude_done: bool,
+    /// Sugerencia del historial: (lo escrito, lo que falta).
+    pub ghost: Option<(String, String)>,
+    /// Claude está escribiendo un comando para este panel (desde cuándo).
+    pub ai_busy: Option<Instant>,
+    /// Explicación de Claude mostrada sobre el panel.
+    pub ai_note: Option<AiNote>,
+    /// Archivos que ya estaban modificados cuando arrancó Claude Code.
+    pub claude_base: Option<std::collections::HashSet<String>>,
+    was_claude: bool,
+    /// Panel de cambios abierto.
+    pub changes: Option<crate::changes::Changes>,
+    /// Avisar (notificación) cuando termine el comando que corre.
+    pub notify_done: bool,
+    /// Última vez que la app escribió algo en pantalla.
+    pub last_output: Option<Instant>,
+    /// Un comando terminó sin que miraras esta pestaña: ¿salió bien?
+    pub cmd_done: Option<bool>,
+    was_working: bool,
     /// Selección que sigue al contenido cuando una app en pantalla alterna hace scroll.
     pub vsel: Option<crate::vsel::VSel>,
+    /// Selección rápida activa (Ctrl+Shift+Space).
+    pub quick: Option<crate::quick::QuickSelect>,
     /// Hubo salida nueva mientras no mirabas este panel.
     pub activity: bool,
     pub cwd: String,
@@ -70,6 +131,8 @@ pub struct Pane {
     last_output_line: Option<i64>,
     /// Líneas donde se escribió cada comando (para Ctrl+↑ / Ctrl+↓).
     prompt_marks: Vec<i64>,
+    /// Comandos con su salida, en orden.
+    pub blocks: Vec<Block>,
     last_history: usize,
     /// Comando que está corriendo (para confirmar antes de cerrar).
     running_cmd: Option<String>,
@@ -105,6 +168,20 @@ impl Pane {
             title: None,
             attention: false,
             born: Instant::now(),
+            pending_run: None,
+            closing: None,
+            claude_done: false,
+            ghost: None,
+            ai_busy: None,
+            ai_note: None,
+            claude_base: None,
+            was_claude: false,
+            changes: None,
+            notify_done: false,
+            last_output: None,
+            cmd_done: None,
+            was_working: false,
+            quick: None,
             vsel: None,
             activity: false,
             cwd: start_dir
@@ -122,6 +199,7 @@ impl Pane {
             cmd_started_at: None,
             last_output_line: None,
             prompt_marks: vec![],
+            blocks: vec![],
             last_history: 0,
             running_cmd: None,
             search: Search::default(),
@@ -163,6 +241,21 @@ impl Pane {
             if self.prompt_marks.last() != Some(&line) {
                 self.prompt_marks.push(line);
             }
+            // Un Enter sin comando no hace bloque; uno en la misma línea lo reemplaza.
+            self.blocks.retain(|b| b.prompt < line);
+            if self.running_cmd.is_some() || !self.typed_exact {
+                let cmd = self.running_cmd.clone().unwrap_or_default();
+                if self.blocks.len() >= 2000 {
+                    self.blocks.remove(0);
+                }
+                self.blocks.push(Block {
+                    prompt: line,
+                    command: cmd,
+                    ok: None,
+                    started: Instant::now(),
+                    duration: None,
+                });
+            }
         }
     }
 
@@ -180,13 +273,13 @@ impl Pane {
 
     /// (líneas de historial, líneas en pantalla, cuánto se subió con el scroll)
     pub fn scroll_info(&self) -> (usize, usize, usize) {
-        let g = &self.backend.last_content().grid;
-        (g.history_size(), g.screen_lines(), g.display_offset())
+        let c = self.backend.last_content();
+        (c.history_size, c.terminal_size.screen_lines(), c.display_offset)
     }
 
     /// Texto de cada fila visible (para seguir el contenido en pantalla alterna).
     pub fn screen_rows(&self) -> Vec<Vec<char>> {
-        let g = &self.backend.last_content().grid;
+        self.backend.with_grid(|g| {
         let off = g.display_offset() as i32;
         let cols = g.columns();
         (0..g.screen_lines() as i32)
@@ -204,6 +297,7 @@ impl Pane {
                     .collect()
             })
             .collect()
+        })
     }
 
     pub fn scroll_by(&mut self, lines: i32) {
@@ -242,6 +336,7 @@ impl Pane {
         if hist < self.last_history {
             // Se borró el historial: las marcas ya no sirven.
             self.prompt_marks.clear();
+            self.blocks.clear();
             self.last_output_line = None;
             self.search.computed = None;
         }
@@ -279,7 +374,8 @@ impl Pane {
             return;
         }
         let first = self.search.computed.as_ref().is_none_or(|c| c.0 != key.0);
-        self.search.matches = find_all(&self.backend.last_content().grid, &self.search.query);
+        let q = self.search.query.clone();
+        self.search.matches = self.backend.with_grid(|g| find_all(g, &q));
         self.search.computed = Some(key);
         if first {
             // Empieza por el resultado más reciente (el de más abajo).
@@ -328,12 +424,41 @@ impl Pane {
             || title.starts_with('✳')
     }
 
-    /// Claude Code pone una animación braille al inicio del título mientras trabaja.
+    /// Se llama cada frame: nota cuando Claude Code pasa de trabajar a esperar.
+    pub fn track_claude(&mut self, shown: bool) {
+        // Al arrancar Claude Code se anota qué estaba modificado antes,
+        // para marcar después lo que cambió él (un solo `git status`).
+        let claude = self.is_claude();
+        if claude && !self.was_claude {
+            if let Some(root) = self.git.status.as_ref().map(|g| std::path::PathBuf::from(&g.root)) {
+                self.claude_base = Some(crate::changes::snapshot(&root));
+            }
+        }
+        self.was_claude = claude;
+        let working = self.is_working();
+        if self.was_working && !working && !shown {
+            self.claude_done = true;
+        }
+        if shown || working {
+            self.claude_done = false;
+        }
+        self.was_working = working;
+    }
+
+    /// ¿Claude Code está trabajando? Por la animación braille del título o,
+    /// si su versión no la pone (pasa en Windows), porque sigue dibujando
+    /// (su animación de "pensando" escribe varias veces por segundo).
     pub fn is_working(&self) -> bool {
-        self.title
+        let spinner = self
+            .title
             .as_deref()
             .and_then(|t| t.chars().next())
-            .is_some_and(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
+            .is_some_and(|c| ('\u{2800}'..='\u{28ff}').contains(&c));
+        spinner
+            || (self.is_claude()
+                && self
+                    .last_output
+                    .is_some_and(|t| t.elapsed() < Duration::from_millis(1500)))
     }
 
     /// Rutas listas para escribir en esta shell (con comillas si hay espacios).
@@ -400,8 +525,8 @@ impl Pane {
 
     /// Línea absoluta del cursor (contando el historial de scroll).
     fn cursor_line(&self) -> i64 {
-        let g = &self.backend.last_content().grid;
-        g.history_size() as i64 + g.cursor.point.line.0 as i64
+        let c = self.backend.last_content();
+        c.history_size as i64 + c.cursor_point.line.0 as i64
     }
 
     /// Posición en pantalla de la fila del cursor: (y de arriba, alto de celda).
@@ -409,8 +534,45 @@ impl Pane {
         let rect = self.term_rect?;
         let c = self.backend.last_content();
         let h = c.terminal_size.cell_height as f32;
-        let line = c.grid.cursor.point.line.0 + c.grid.display_offset() as i32;
+        let line = c.cursor_point.line.0 + c.display_offset as i32;
         Some((rect.min.y + line.max(0) as f32 * h, h))
+    }
+
+    /// ¿Pegar varias líneas acá las ejecutaría una por una? (No si la app usa
+    /// pegado entre corchetes, ni en el prompt de PowerShell, que pega bien.)
+    pub fn paste_runs_lines(&self) -> bool {
+        let bracketed = self
+            .backend
+            .last_content()
+            .terminal_mode
+            .contains(egui_term::TerminalMode::BRACKETED_PASTE);
+        !bracketed && !(self.at_prompt && self.profile == ProfileKind::PowerShell)
+    }
+
+    /// Esquina superior izquierda de la celda del cursor, en pantalla.
+    pub fn cursor_pos(&self) -> Option<egui::Pos2> {
+        let rect = self.term_rect?;
+        let c = self.backend.last_content();
+        let (w, h) = (c.terminal_size.cell_width as f32, c.terminal_size.cell_height as f32);
+        let line = c.cursor_point.line.0 + c.display_offset as i32;
+        Some(egui::pos2(
+            rect.min.x + c.cursor_point.column.0 as f32 * w,
+            rect.min.y + line as f32 * h,
+        ))
+    }
+
+    /// ¿No hay nada escrito a la derecha del cursor? (Si la shell ya muestra
+    /// su propia sugerencia, como PSReadLine en PowerShell 7, no se pisa.)
+    pub fn cursor_tail_blank(&self) -> bool {
+        let c = self.backend.last_content();
+        let p = c.cursor_point;
+        self.backend.with_grid(|g| {
+            let row = &g[p.line];
+            (p.column.0..g.columns()).all(|x| {
+                let ch = row[Column(x)].c;
+                ch == ' ' || ch == '\0'
+            })
+        })
     }
 
     /// Sigue lo que se escribe en el prompt para saber qué hay en la línea.
@@ -458,6 +620,21 @@ impl Pane {
     pub fn poll_events(&mut self) -> Vec<Finished> {
         let events = self.log.poll();
         let mut done = vec![];
+        let mut run_after = None;
+        // Comando pendiente: con el primer prompt, o a los 3 s si la shell no avisa.
+        if self.pending_run.is_some()
+            && (!events.is_empty()
+                || self.born.elapsed() > Duration::from_secs(3))
+        {
+            let cmd = self.pending_run.take().unwrap();
+            if events.is_empty() {
+                self.insert(&cmd);
+                self.insert("\r");
+            } else {
+                // Se corre después de procesar los eventos (ya en el prompt).
+                run_after = Some(cmd);
+            }
+        }
         for e in events {
             // Cualquier evento llega justo antes de dibujar el prompt.
             self.at_prompt = true;
@@ -481,8 +658,19 @@ impl Pane {
                 self.last_output_line = self.cmd_start_line.take();
                 self.running_cmd = None;
                 let elapsed = self.cmd_started_at.take().map(|t| t.elapsed());
+                if let Some(b) = self.blocks.last_mut().filter(|b| b.ok.is_none()) {
+                    // La shell sabe exactamente qué se ejecutó (historial, Tab…).
+                    if let Some(c) = e.command.as_ref().filter(|c| !c.trim().is_empty()) {
+                        b.command = c.trim().to_string();
+                    }
+                    b.ok = Some(e.ok.unwrap_or(true));
+                    b.duration = Some(b.started.elapsed());
+                }
                 done.push(Finished { event: e, elapsed });
             }
+        }
+        if let Some(cmd) = run_after {
+            self.run(&cmd);
         }
         done
     }
@@ -505,44 +693,76 @@ impl Pane {
         }
     }
 
-    /// Texto de las líneas absolutas [start, end).
-    fn text_between(&self, start: i64, end: i64) -> String {
-        let g = &self.backend.last_content().grid;
-        let hist = g.history_size() as i64;
-        let cols = g.columns();
-        let (top, bottom) = (g.topmost_line().0 as i64, g.bottommost_line().0 as i64);
-        let mut out = String::new();
-        for abs in start..end {
-            let l = abs - hist;
-            if l < top || l > bottom {
-                continue;
-            }
-            let row = &g[Line(l as i32)];
-            let mut s = String::new();
-            for c in 0..cols {
-                let cell = &row[Column(c)];
-                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                    continue;
-                }
-                s.push(cell.c);
-            }
-            let wraps = cols > 0 && row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
-            if wraps {
-                out.push_str(&s);
-            } else {
-                out.push_str(s.trim_end());
-                out.push('\n');
+    /// Bloques que se ven (aunque sea en parte) en pantalla.
+    pub fn visible_blocks(&self) -> Vec<BlockView> {
+        if self.blocks.is_empty() || !self.profile.has_integration() {
+            return vec![];
+        }
+        let c = self.backend.last_content();
+        if c.terminal_mode.contains(egui_term::TerminalMode::ALT_SCREEN) {
+            return vec![];
+        }
+        let hist = c.history_size as i64;
+        let off = c.display_offset as i64;
+        let rows = c.terminal_size.screen_lines() as i64;
+        let extra = self.prompt_lines as i64 - 1;
+        let to_row = |abs: i64| abs - hist + off;
+        // El último bloque termina donde empieza el prompt actual (o el cursor).
+        let tail = if self.at_prompt {
+            self.cursor_line() - extra
+        } else {
+            self.cursor_line() + 1
+        };
+        let mut out = vec![];
+        for (i, b) in self.blocks.iter().enumerate() {
+            let end = self
+                .blocks
+                .get(i + 1)
+                .map_or(tail, |n| n.prompt - extra);
+            let (top, bottom) = (to_row(b.prompt - extra), to_row(end.max(b.prompt + 1)));
+            if bottom > 0 && top < rows {
+                out.push(BlockView { index: i, top, bottom, cmd_row: to_row(b.prompt) });
             }
         }
-        out.trim_end_matches('\n')
-            .trim_start_matches('\n')
-            .to_string()
+        out
+    }
+
+    /// Salida de un bloque (sin el comando).
+    pub fn block_output(&self, i: usize) -> String {
+        let Some(b) = self.blocks.get(i) else { return String::new() };
+        let extra = self.prompt_lines as i64 - 1;
+        let end = match self.blocks.get(i + 1) {
+            Some(n) => n.prompt - extra,
+            None if self.at_prompt => self.cursor_line() - extra,
+            None => self.cursor_line() + 1,
+        };
+        self.text_between(b.prompt + 1, end)
+    }
+
+    /// Texto de las líneas absolutas [start, end).
+    fn text_between(&self, start: i64, end: i64) -> String {
+        self.backend.with_grid(|g| text_between(g, start, end))
     }
 
     /// Abre un link que se hizo Ctrl+click: URL → navegador; ruta → editor.
     /// Devuelve un mensaje si no se pudo.
     pub fn open_link(&self, link: &str) -> Option<String> {
         let link = link.trim_end_matches(['.', ',', ')', ']', ';', ':', '\'', '"']);
+        // file:// (hipervínculos OSC 8 de Claude Code, ls…) → ruta local al editor.
+        let decoded;
+        let link = match link.strip_prefix("file://") {
+            Some(rest) => {
+                // file://host/ruta o file:///C:/ruta
+                let rest = rest.find('/').map_or(rest, |i| &rest[i..]);
+                let rest = match rest.as_bytes() {
+                    [b'/', d, b':', ..] if d.is_ascii_alphabetic() => &rest[1..],
+                    _ => rest,
+                };
+                decoded = percent_decode(rest);
+                decoded.as_str()
+            }
+            None => link,
+        };
         if link.contains("://") || link.starts_with("mailto:") || link.starts_with("magnet:") {
             return open::that_detached(link)
                 .err()
@@ -658,6 +878,12 @@ fn open_in_vscode(path: &std::path::Path, line: u32, col: Option<u32>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn percent_decode_paths() {
+        assert_eq!(super::percent_decode("C:/Mis%20Docs/a%C3%B1o.rs"), "C:/Mis Docs/año.rs");
+        assert_eq!(super::percent_decode("100%"), "100%");
+    }
+
     use super::split_line_col;
 
     #[test]
@@ -676,5 +902,64 @@ mod tests {
             (r"C:\dev\x.rs", Some(3), None)
         );
         assert_eq!(split_line_col("README.md"), ("README.md", None, None));
+    }
+}
+
+/// `%20` → espacio, etc. (rutas de los links file://).
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = std::str::from_utf8(&b[i + 1..i + 3]).ok();
+            if let Some(v) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Texto de las líneas absolutas [start, end) de la grilla.
+fn text_between(
+    g: &alacritty_terminal::Grid<alacritty_terminal::term::cell::Cell>,
+    start: i64,
+    end: i64,
+) -> String {
+    {
+        let hist = g.history_size() as i64;
+        let cols = g.columns();
+        let (top, bottom) = (g.topmost_line().0 as i64, g.bottommost_line().0 as i64);
+        let mut out = String::new();
+        for abs in start..end {
+            let l = abs - hist;
+            if l < top || l > bottom {
+                continue;
+            }
+            let row = &g[Line(l as i32)];
+            let mut s = String::new();
+            for c in 0..cols {
+                let cell = &row[Column(c)];
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                s.push(cell.c);
+            }
+            let wraps = cols > 0 && row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+            if wraps {
+                out.push_str(&s);
+            } else {
+                out.push_str(s.trim_end());
+                out.push('\n');
+            }
+        }
+        out.trim_end_matches('\n')
+            .trim_start_matches('\n')
+            .to_string()
     }
 }
